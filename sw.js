@@ -1,8 +1,8 @@
-/* Bezorg-app service worker — maakt de index installeerbaar en offline-bruikbaar.
-   Bump CACHE als je een nieuwe versie uitrolt, dan vervangt de SW de oude cache. */
-const CACHE = 'bezorg-v25';
+/* Bezorg-app service worker.
+   App-bestanden: NETWORK-FIRST → online krijg je altijd de nieuwste versie; de cache is enkel offline-vangnet.
+   Libraries/overige bestanden: cache-first. Bump CACHE bij een nieuwe uitrol. */
+const CACHE = 'bezorg-v26';
 
-/* App-schil: moet aanwezig zijn voor offline gebruik (relatieve paden i.v.m. submap op GitHub Pages). */
 const CORE = [
   './',
   './index.html',
@@ -11,7 +11,6 @@ const CORE = [
   './icon-512.png'
 ];
 
-/* Externe libraries: best-effort precachen; anders worden ze bij eerste gebruik gecachet. */
 const LIBS = [
   'https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js',
   'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js'
@@ -20,8 +19,8 @@ const LIBS = [
 self.addEventListener('install', (e) => {
   e.waitUntil((async () => {
     const c = await caches.open(CACHE);
-    await c.addAll(CORE);                                   // verplicht
-    await Promise.allSettled(LIBS.map((u) => c.add(u)));    // best-effort
+    await c.addAll(CORE);
+    await Promise.allSettled(LIBS.map((u) => c.add(u)));
     self.skipWaiting();
   })());
 });
@@ -42,25 +41,40 @@ self.addEventListener('fetch', (e) => {
   const sameOrigin = url.origin === location.origin;
   const isLib = /(?:jsdelivr|unpkg|cdnjs)/.test(url.host);
 
-  // Navigaties naar buiten (bijv. Google Maps) niet onderscheppen.
+  // Navigaties naar buiten (bijv. Google Maps, mailto) niet onderscheppen.
   if (req.mode === 'navigate' && !sameOrigin) return;
 
+  // Eigen app-bestanden (navigatie + html/js/css/manifest): network-first, HTTP-cache omzeilen.
+  const isShell = sameOrigin && (
+    req.mode === 'navigate' ||
+    url.pathname.endsWith('/') ||
+    /\.(?:html|js|css|webmanifest)$/.test(url.pathname)
+  );
+  if (isShell) {
+    e.respondWith((async () => {
+      try {
+        const target = (req.mode === 'navigate') ? './index.html' : req;
+        const res = await fetch(target, { cache: 'no-store' });
+        caches.open(CACHE).then((c) => c.put(req, res.clone())).catch(() => {});
+        return res;
+      } catch (err) {
+        const cached = await caches.match(req) || (req.mode === 'navigate' ? await caches.match('./index.html') : null);
+        if (cached) return cached;
+        throw err;
+      }
+    })());
+    return;
+  }
+
+  // Libraries en overige bestanden: cache-first.
   e.respondWith((async () => {
     const cached = await caches.match(req);
     if (cached) return cached;
     try {
       const res = await fetch(req);
-      if (sameOrigin || isLib) {
-        const copy = res.clone();
-        caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
-      }
+      if (sameOrigin || isLib) caches.open(CACHE).then((c) => c.put(req, res.clone())).catch(() => {});
       return res;
     } catch (err) {
-      // Offline: voor een paginanavigatie de gecachete index teruggeven.
-      if (req.mode === 'navigate') {
-        const fallback = await caches.match('./index.html');
-        if (fallback) return fallback;
-      }
       throw err;
     }
   })());

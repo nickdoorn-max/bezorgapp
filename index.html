@@ -1619,10 +1619,18 @@ if($('#btnControl')) $('#btnControl').onclick=exportControl;
 load();
 </script>
 <script>
-/* Service worker registreren — maakt de app installeerbaar en offline-bruikbaar. */
+/* Service worker registreren — maakt de app installeerbaar en offline-bruikbaar.
+   updateViaCache:'none' + update() zorgen dat een nieuwe versie altijd wordt opgepikt;
+   bij een nieuwe actieve SW herlaadt de pagina één keer zodat de nieuwste code draait. */
 if ('serviceWorker' in navigator) {
+  let swReloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (swReloaded) return; swReloaded = true; window.location.reload();
+  });
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').catch(() => {});
+    navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' })
+      .then((reg) => { try { reg.update(); } catch (e) {} })
+      .catch(() => {});
   });
 }
 </script>
