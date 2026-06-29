@@ -525,7 +525,7 @@ const tapeColor=o=>o&&(o.tape||o.color)||'';                              // ord
 const tapeDot=o=>{ const c=tapeColor(o); return c?`<span class="tapedot" style="background:${c}" title="tapekleur"></span>`:''; };
 const uid=()=>'o'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 
-async function load(){ const raw=await store.get(KEY); if(raw){try{orders=JSON.parse(raw)||[];}catch(e){orders=[];}} try{ const m=await store.get(MAILKEY); if(m) mailTo=String(m); }catch(e){} try{ const r=await store.get(RKEY); routeReported=(r==='1'); }catch(e){} try{ const rr=await store.get(RRKEY); reportedRits=rr?(JSON.parse(rr)||[]):[]; }catch(e){ reportedRits=[]; } if(routeReported) scanMode='uitscan'; await render(); applyScanMode(); setView('scanner'); }
+async function load(){ const raw=await store.get(KEY); if(raw){try{orders=JSON.parse(raw)||[];}catch(e){orders=[];}} try{ const m=await store.get(MAILKEY); if(m) mailTo=String(m); }catch(e){} try{ const r=await store.get(RKEY); routeReported=(r==='1'); if(r==null) routeReported=orders.some(o=>o.reported && o.status!=='done'); }catch(e){} reportedRits=[...new Set(orders.filter(o=>o.reported).map(o=>o.chauffeur||''))]; if(routeReported) scanMode='uitscan'; await render(); applyScanMode(); setView('scanner'); }
 async function save(){ await store.set(KEY, JSON.stringify(orders)); }
 async function setMailTo(m){ m=String(m||'').trim(); if(!m) return; mailTo=m; try{ await store.set(MAILKEY,m); }catch(e){} }
 
@@ -585,8 +585,8 @@ function mailLoad(mode){
     openMail(to, subject, body);
   }
   routeReported=true; try{ store.set(RKEY,'1'); }catch(e){}
-  route.forEach(o=>{ const c=o.chauffeur||''; if(reportedRits.indexOf(c)<0) reportedRits.push(c); });
-  try{ store.set(RRKEY, JSON.stringify(reportedRits)); }catch(e){}
+  route.forEach(o=>{ o.reported=true; const c=o.chauffeur||''; if(reportedRits.indexOf(c)<0) reportedRits.push(c); });
+  try{ store.set(RRKEY, JSON.stringify(reportedRits)); }catch(e){} save();
   scanMode='uitscan'; applyScanMode(); setView('scanner'); render();
   toast('Rit aangemeld — scanner staat nu op uitscannen');
 }
@@ -1513,7 +1513,7 @@ async function mailDelivery(uids, photoDataURL){
   const ordsCompact=list.map(o=>o.ord).join('_');
   const subject = multi ? 'Levering meerdere orders' : ('Geleverd: '+o0.ord+(refOf(o0)?(' '+refOf(o0)):''));
   let lat=o0.lat, lng=o0.lng;
-  if((lat==null||lng==null) && !photoDataURL){ const p=await getPos(); if(p){ lat=+p.lat.toFixed(6); lng=+p.lng.toFixed(6); } }
+  if(lat==null||lng==null){ const p=await getPos(); if(p){ lat=+p.lat.toFixed(6); lng=+p.lng.toFixed(6); } }
   const maps=(lat!=null&&lng!=null)?('https://maps.google.com/?q='+lat+','+lng):'';
   const addr=(o0.adres||'').trim();
   const when=fmtFull(o0.deliveredAt||Date.now());
@@ -1528,7 +1528,7 @@ async function mailDelivery(uids, photoDataURL){
   const ccKantoor=kantoorMail();        // TESTFASE: kantooradres
   let photoFile=null;
   try{ let d=photoDataURL; if(!d) d=await store.get('photo:'+o0.uid); if(d) photoFile=dataURLtoFile(d, 'bezorgfoto_'+ordsCompact.replace(/[^0-9]+/g,'_')+'.jpg'); }catch(e){}
-  if(photoFile && navigator.canShare && navigator.canShare({files:[photoFile]})){
+  if(photoFile && navigator.share && (!navigator.canShare || navigator.canShare({files:[photoFile]}))){
     const head='Aan: '+toKlant+'\nCC: '+ccKantoor+'\n\n';
     try{ await navigator.share({files:[photoFile], title:subject, text:head+summary}); return; }
     catch(e){ if(e && e.name==='AbortError') return; }
@@ -1607,14 +1607,19 @@ async function exportControl(){
   const data={ __rittencontrole:true, version:1, exportedAt:new Date().toISOString(), datum, chauffeurs, orders:items };
   const fname='rittencontrole_'+datum+'.json';
   const blob=new Blob([JSON.stringify(data)],{type:'application/json'});
-  const text='Rittencontrole '+datum;
+  const subj='Rittencontrole '+datum+(chauffeurs?(' \u2014 '+chauffeurs):'');
+  const nDone=items.filter(i=>i.status==='done').length, nPart=items.filter(i=>i.status==='partial').length, nOpen=items.length-nDone-nPart;
+  const body='Controlebestand van de rit (orders, foto\u2019s en GPS) zit als bijlage.\n\n'
+    +'Datum: '+datum+'\n'+(chauffeurs?('Rit(ten): '+chauffeurs+'\n'):'')
+    +'Orders: '+items.length+' (geleverd '+nDone+', deels '+nPart+', open '+nOpen+')';
   try{
     const file=new File([blob],fname,{type:'application/json'});
-    if(navigator.canShare && navigator.canShare({files:[file]})){ await navigator.share({files:[file], title:text, text}); return; }
+    if(navigator.share && (!navigator.canShare || navigator.canShare({files:[file]}))){ await navigator.share({files:[file], title:subj, text:body}); return; }
   }catch(e){ if(e&&e.name==='AbortError') return; }
+  // delen-met-bijlage lukt niet op dit toestel → bestand opslaan en mail met de tekst openen (bijlage handmatig)
   try{ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=fname; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1500); }catch(e){}
-  try{ location.href='mailto:'+encodeURIComponent(kantoorMail())+'?subject='+encodeURIComponent(text)+'&body='+encodeURIComponent('Het controlebestand "'+fname+'" is op dit toestel opgeslagen; voeg het toe als bijlage aan deze mail.'); }catch(e){}
-  toast('Controlebestand opgeslagen — voeg het toe als bijlage in de mail');
+  try{ location.href='mailto:'+encodeURIComponent(kantoorMail())+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(body+'\n\n(Het bestand "'+fname+'" is gedownload \u2014 voeg het toe als bijlage.)'); }catch(e){}
+  toast('Controlebestand gedownload — voeg het toe als bijlage in de mail');
 }
 if($('#btnControl')) $('#btnControl').onclick=exportControl;
 
