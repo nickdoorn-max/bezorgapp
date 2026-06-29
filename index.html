@@ -274,6 +274,11 @@
   .inlinescan.live .incamstart{display:none}
   .inlinescan.live .incamtxt{display:block}
   .inlinescan:not(.live) .incamtxt{display:none}
+  .exdetails{margin-top:8px}
+  .exord-head{font-size:13px;color:#6b6864;margin:2px 0 8px}
+  .ocrstat{font-size:12px;color:#5a5752;margin:6px 0;padding:7px 11px;background:#f4efea;border:1px solid #e7ded2;border-radius:8px;line-height:1.4}
+  .exmeta{font-size:12px;color:#6b6864;margin-top:1px}
+  .exbun-lab{font-size:12px;color:#6b6864;margin:8px 0 2px}
 </style>
 </head>
 <body>
@@ -344,8 +349,6 @@
 
       <div class="block">
         <h2>Losse / extra order</h2>
-        <p class="sub">Order die niet in de planning zit maar wél mee op de vrachtwagen? Scan hier de pakbon en geef aan waarom 'm extra is. Hoort 'm bij een bestaand afleveradres (zelfde ordernummer), dan koppelen we 'm daaraan; anders komt 'm onderaan te staan.</p>
-        <label class="fld"><span>Reden — waarom is deze order extra?</span><textarea class="txt area" id="extraMemo" rows="2" placeholder="bv. spoedlevering, stond niet op de rittenlijst, retour meenemen…"></textarea></label>
         <button class="btn primary full" id="btnScanExtra">Pakbon scannen</button>
       </div>
 
@@ -474,6 +477,22 @@
         <input id="extraSearch" inputmode="text" autocomplete="off" placeholder="of typ ordernr(.bundel)…">
       </div>
     </div>
+    <div id="extraDetails" class="exdetails" style="display:none">
+      <div class="exord-head">Order <b id="exOrd">—</b> · vul de pakbongegevens aan</div>
+      <input type="file" id="exPhoto" accept="image/*" capture="environment" style="display:none">
+      <button class="btn primary full" id="exPhotoBtn">📷 Foto van pakbon — automatisch invullen</button>
+      <div class="ocrstat" id="exOcr" style="display:none"></div>
+      <label class="fld"><span>Afleveradres</span><textarea class="txt area" id="exAdres" rows="3" placeholder="naam, straat, postcode plaats"></textarea></label>
+      <label class="fld"><span>Totaal pakketten</span><input class="txt" id="exTotaal" inputmode="numeric" placeholder="bv. 8"></label>
+      <div id="exBundleWrap" style="display:none">
+        <div class="exbun-lab">Bundels — tik aan welke mee zijn</div>
+        <div class="inchips" id="exBundles"></div>
+        <div class="inprog" id="exBundleProg"></div>
+      </div>
+      <label class="fld"><span>Referentie</span><input class="txt" id="exRef" placeholder="bv. Voorraad | Daniel"></label>
+      <label class="fld"><span>Reden — waarom is deze order extra?</span><textarea class="txt area" id="extraMemo" rows="2" placeholder="bv. spoedlevering, stond niet op de rittenlijst, retour meenemen…"></textarea></label>
+      <button class="btn primary full" id="exAdd" style="margin-top:4px">Losse order toevoegen</button>
+    </div>
     <button class="btn ghost full" id="extraClose" style="margin-top:6px">Sluiten</button>
   </div>
 </div>
@@ -540,8 +559,9 @@ function counts(){
    Na de testfase: zet KANTOOR_MAIL_DEFAULT terug op '' om weer per toestel in te stellen. */
 const KANTOOR_MAIL_DEFAULT='nick.vandoorn@arcelormittal.com';
 function kantoorMail(){
+  if(KANTOOR_MAIL_DEFAULT) return KANTOOR_MAIL_DEFAULT;   // TESTFASE: vaste standaard wint altijd
   let m=''; try{ m=(localStorage.getItem('kantoorMail')||'').trim(); }catch(e){}
-  return m || KANTOOR_MAIL_DEFAULT;
+  return m;
 }
 function plateOf(o){ const c=String(o&&o.chauffeur||''); const i=c.indexOf('/'); return (i>=0?c.slice(i+1):c).trim(); }   // kenteken = deel na "/" in de voertuignaam
 function routeOrders(){ return orders.filter(o=>!o.extra).filter(inFilter); }
@@ -932,12 +952,128 @@ $('#fileJson').onchange=e=>{
 
 /* ---- Losse / extra order: scannen + reden (vervangt handmatig invoeren) ---- */
 function openExtraScan(){ if($('#extraModal')){ $('#extraModal').classList.add('show'); startInlineCam('#camExtra','#extraScanner'); } }
-function closeExtraScan(){ if($('#extraModal')) $('#extraModal').classList.remove('show'); stopInlineCam(); }
+function closeExtraScan(){
+  if($('#extraModal')) $('#extraModal').classList.remove('show');
+  stopInlineCam(); pendingExtra=null;
+  const d=$('#extraDetails'); if(d) d.style.display='none';
+  const sc=$('#extraScanner'); if(sc) sc.style.display='';
+  const ss=$('#extraSearch'); if(ss && ss.closest('.scan')) ss.closest('.scan').style.display='';
+  if($('#extraMemo')) $('#extraMemo').value='';
+}
+
+/* ---- Losse order: foto van pakbon → automatisch invullen (OCR) ---- */
+let pendingExtra=null;
+const TESSERACT_URLS=['https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js','https://unpkg.com/tesseract.js@5/dist/tesseract.min.js'];
+function setOcr(msg){ const e=$('#exOcr'); if(e){ e.style.display='block'; e.textContent=msg; } }
+function showExtraDetails(ord){
+  stopInlineCam();
+  const sc=$('#extraScanner'); if(sc) sc.style.display='none';
+  const ss=$('#extraSearch'); if(ss && ss.closest('.scan')) ss.closest('.scan').style.display='none';
+  const d=$('#extraDetails'); if(d) d.style.display='block';
+  if($('#exOrd')) $('#exOrd').textContent=ord;
+  ['#exAdres','#exTotaal','#exRef'].forEach(sel=>{ if($(sel)) $(sel).value=''; });
+  if($('#exOcr')){ $('#exOcr').style.display='none'; $('#exOcr').textContent=''; }
+  if($('#extraMemo')) $('#extraMemo').value='';
+  renderExtraBundles();
+}
+function parsePakbon(text){
+  const lines=String(text||'').replace(/\r/g,'').split('\n').map(x=>x.trim()).filter(Boolean);
+  const low=lines.map(x=>x.toLowerCase());
+  const noise=/(number of packages|packages|levering|^\s*\d+\s*\/\s*\d+\s*$|maandag|dinsdag|woensdag|donderdag|vrijdag|zaterdag|zondag|\d{1,2}-\d{1,2}-\d{2,4})/i;
+  let referentie='', totaal='', adres='';
+  for(let i=0;i<lines.length;i++){
+    if(/referentie/i.test(lines[i])){
+      let v=lines[i].replace(/^.*?referentie\s*:?\s*/i,'').trim();
+      if(!v && lines[i+1] && !noise.test(low[i+1])) v=lines[i+1].trim();
+      referentie=v; break;
+    }
+  }
+  for(let i=0;i<lines.length;i++){
+    const m=lines[i].match(/(\d+)\s*\/\s*(\d+)/);
+    if(m){ totaal=m[2]; if(/packages/i.test(low[i])||/packages/i.test(low[i-1]||'')) break; }
+  }
+  const a=low.findIndex(x=>/afleveradres/.test(x));
+  if(a>=0){
+    const out=[];
+    for(let i=a+1;i<lines.length && out.length<5;i++){
+      if(noise.test(low[i])) continue;
+      out.push(lines[i]);
+      if(/nederland/i.test(lines[i])) break;
+    }
+    adres=out.join('\n');
+  }
+  return { adres, totaal, referentie };
+}
+function renderExtraBundles(){
+  const wrap=$('#exBundleWrap'); if(!wrap || !pendingExtra) return;
+  if(!(pendingExtra.ticked instanceof Set)) pendingExtra.ticked=new Set();
+  const total=parseInt(String($('#exTotaal')?$('#exTotaal').value:'').replace(/\D+/g,''),10);
+  if(!total || total<1){ wrap.style.display='none'; if($('#exBundles')) $('#exBundles').innerHTML=''; if($('#exBundleProg')) $('#exBundleProg').textContent=''; return; }
+  [...pendingExtra.ticked].forEach(b=>{ if(b<1||b>total) pendingExtra.ticked.delete(b); });
+  wrap.style.display='block';
+  let g=''; for(let i=1;i<=total;i++) g+=`<div class="inchip${pendingExtra.ticked.has(i)?' on':''}" data-b="${i}">${i}</div>`;
+  $('#exBundles').innerHTML=g;
+  $('#exBundles').querySelectorAll('.inchip').forEach(c=>c.onclick=()=>{
+    const b=parseInt(c.dataset.b,10);
+    if(pendingExtra.ticked.has(b)) pendingExtra.ticked.delete(b); else pendingExtra.ticked.add(b);
+    c.classList.toggle('on'); updateExtraBundleProg(total);
+  });
+  updateExtraBundleProg(total);
+}
+function updateExtraBundleProg(total){
+  const el=$('#exBundleProg'); if(!el||!pendingExtra||!(pendingExtra.ticked instanceof Set)) return;
+  const c=pendingExtra.ticked.size, done=c>=total;
+  el.textContent=c+'/'+total+' aangevinkt'+(done?' — compleet ✓':'');
+  el.classList.toggle('ok',done);
+}
+async function ocrPakbon(file){
+  if(!file) return;
+  setOcr('Foto verwerken…');
+  try{
+    const dataURL=await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=()=>rej(r.error); r.readAsDataURL(file); });
+    const small=await compressDataURL(dataURL,1600,0.9);
+    setOcr('Tekstherkenning laden…');
+    const ok=await ensureLib('Tesseract', TESSERACT_URLS);
+    if(!ok || typeof Tesseract==='undefined'){ setOcr('Kon de tekstherkenning niet laden (internet nodig bij de eerste keer). Vul de velden handmatig in.'); return; }
+    const out=await Tesseract.recognize(small,'nld+eng',{ logger:m=>{ if(m && m.status==='recognizing text' && m.progress!=null) setOcr('Tekst lezen… '+Math.round(m.progress*100)+'%'); } });
+    const text=(out && out.data && out.data.text)||'';
+    const r=parsePakbon(text);
+    if($('#exAdres') && r.adres) $('#exAdres').value=r.adres;
+    if($('#exTotaal') && r.totaal) $('#exTotaal').value=r.totaal;
+    if($('#exRef') && r.referentie) $('#exRef').value=r.referentie;
+    renderExtraBundles();
+    const got=[r.adres&&'afleveradres', r.totaal&&'totaal', r.referentie&&'referentie'].filter(Boolean);
+    setOcr(got.length? ('Ingelezen: '+got.join(', ')+'. Controleer en pas zo nodig aan.') : 'Niets herkend — vul de velden handmatig in.');
+  }catch(e){ setOcr('Lezen mislukt — vul de velden handmatig in.'); }
+}
+async function commitNewExtra(){
+  if(!pendingExtra){ closeExtraScan(); return; }
+  const adres=$('#exAdres')?$('#exAdres').value.trim():'';
+  const totaalRaw=$('#exTotaal')?$('#exTotaal').value.trim():'';
+  const total=parseInt(totaalRaw.replace(/\D+/g,''),10);
+  const ref=$('#exRef')?$('#exRef').value.trim():'';
+  const memo=$('#extraMemo')?$('#extraMemo').value.trim():'';
+  const firstLine=(adres.split(/[\n,]/)[0]||'').trim();
+  const ticked=(pendingExtra.ticked instanceof Set)?[...pendingExtra.ticked].filter(b=>!total||b<=total).sort((a,b)=>a-b):(pendingExtra.bundel?[pendingExtra.bundel]:[]);
+  orders.push({ uid:uid(), chauffeur:'', color:'#8a8f94',
+    relatie: firstLine||'Losse order', adres:adres, ord:pendingExtra.ord,
+    aantal: total>0?String(total):'', gewicht:'', volgorde:null, levertijd:'', tijdslevering:'', memo:'',
+    referentie:ref, totaal: total>0?String(total):totaalRaw,
+    extra:true, extraReason:memo, status:'open', deliveredAt:null, note:'',
+    hasPhoto:false, missing:[], inscan:ticked });
+  await save(); await render(); if($('#extraMemo')) $('#extraMemo').value='';
+  closeExtraScan();
+  toast('Losse order toegevoegd');
+}
 if($('#btnScanExtra')) $('#btnScanExtra').onclick=openExtraScan;
 if($('#extraClose')) $('#extraClose').onclick=closeExtraScan;
 if($('#extraCamStart')) $('#extraCamStart').onclick=()=>startInlineCam('#camExtra','#extraScanner');
 if($('#extraSearch')) $('#extraSearch').addEventListener('keydown',e=>{ if(e.key!=='Enter') return; const v=$('#extraSearch').value.trim(); if(v){ handleScan(v); $('#extraSearch').value=''; } });
 if($('#extraModal')) $('#extraModal').addEventListener('click',e=>{ if(e.target===$('#extraModal')) closeExtraScan(); });
+if($('#exPhotoBtn')) $('#exPhotoBtn').onclick=()=>{ if($('#exPhoto')) $('#exPhoto').click(); };
+if($('#exPhoto')) $('#exPhoto').addEventListener('change',e=>{ const f=e.target.files&&e.target.files[0]; if(f) ocrPakbon(f); e.target.value=''; });
+if($('#exAdd')) $('#exAdd').onclick=commitNewExtra;
+if($('#exTotaal')) $('#exTotaal').addEventListener('input',renderExtraBundles);
 
 async function addExtraOrder(ord, bundel){
   const memo = $('#extraMemo') ? $('#extraMemo').value.trim() : '';
@@ -951,11 +1087,9 @@ async function addExtraOrder(ord, bundel){
     toast('Gekoppeld aan bestaand adres: '+(existing.relatie||existing.ord));
     return;
   }
-  orders.push({uid:uid(), chauffeur:'', color:'#8a8f94', relatie:'Losse order', adres:'', ord:String(ord),
-    aantal:'', gewicht:'', volgorde:null, levertijd:'', tijdslevering:'', memo:'', extra:true, extraReason:memo,
-    status:'open', deliveredAt:null, note:'', hasPhoto:false, missing:[], inscan:(bundel?[bundel]:[]) });
-  await save(); await render(); closeExtraScan(); if($('#extraMemo')) $('#extraMemo').value='';
-  toast('Losse order toegevoegd — staat onderaan');
+  // nieuwe losse order: open het detailscherm voor foto/OCR + velden
+  pendingExtra={ ord:String(ord), bundel:(bundel!=null?bundel:null), ticked:new Set(bundel!=null?[bundel]:[]) };
+  showExtraDetails(String(ord));
 }
 
 function renderExtraList(){
@@ -966,7 +1100,7 @@ function renderExtraList(){
   list.forEach(o=>{
     const st = o.status==='done'?'<span class="exstat ok">✓ geleverd</span>' : (o.status==='partial'?'<span class="exstat part">deels</span>':'<span class="exstat open">open</span>');
     html+=`<div class="exrow" data-uid="${o.uid}">
-      <div class="exmain"><div class="exord">${esc(o.ord)}</div><div class="exreason${o.extraReason?'':' muted'}">${o.extraReason?esc(o.extraReason):'— geen reden opgegeven'}</div></div>
+      <div class="exmain"><div class="exord">${esc(o.ord)}</div>${o.adres?`<div class="exmeta">${esc(String(o.adres).replace(/\n/g,', '))}</div>`:''}${o.referentie?`<div class="exmeta">ref: ${esc(o.referentie)}</div>`:''}${(o.aantal&&Array.isArray(o.inscan))?`<div class="exmeta">${o.inscan.length}/${esc(o.aantal)} pakketten aangevinkt</div>`:(o.totaal?`<div class="exmeta">${esc(o.totaal)} pakketten</div>`:'')}<div class="exreason${o.extraReason?'':' muted'}">${o.extraReason?esc(o.extraReason):'— geen reden opgegeven'}</div></div>
       ${st}
       <button class="exdel" data-uid="${o.uid}" title="Verwijderen">✕</button>
     </div>`;
@@ -1321,12 +1455,13 @@ async function mailDelivery(uids, photoDataURL){
   let photoFile=null;
   try{ let d=photoDataURL; if(!d) d=await store.get('photo:'+o0.uid); if(d) photoFile=dataURLtoFile(d, 'bezorgfoto_'+String(ords).replace(/[^0-9]+/g,'_')+'.jpg'); }catch(e){}
   // 1) telefoon: delen mét foto-bijlage (ontvanger in de tekst — leeg laten als niet ingesteld)
+  const to=kantoorMail()||mailTo;   // TESTFASE: bevestiging gaat naar het kantooradres
   if(photoFile && navigator.canShare && navigator.canShare({files:[photoFile]})){
-    try{ await navigator.share({files:[photoFile], title:subject, text:(mailTo?('Mailen naar: '+mailTo+'\n\n'):'')+body}); return; }
+    try{ await navigator.share({files:[photoFile], title:subject, text:(to?('Mailen naar: '+to+'\n\n'):'')+body}); return; }
     catch(e){ if(e && e.name==='AbortError') return; }
   }
   // 2) mailto-fallback: ontvanger (leeg indien niet ingesteld) + onderwerp + tekst (zonder foto-bijlage)
-  const url='mailto:'+encodeURIComponent(mailTo||'')+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body+(photoFile?'\n\n(De bezorgfoto staat op dit toestel — voeg \u2019m toe als bijlage.)':''));
+  const url='mailto:'+encodeURIComponent(to||'')+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body+(photoFile?'\n\n(De bezorgfoto staat op dit toestel — voeg \u2019m toe als bijlage.)':''));
   try{ location.href=url; }catch(e){ toast('Kon de mail niet openen'); }
 }
 
@@ -1371,7 +1506,7 @@ async function shareDagrapport(){
     }
   }catch(e){ if(e&&e.name==='AbortError') return; }
   try{ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=fname; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1500); }catch(e){}
-  try{ location.href='mailto:?subject='+encodeURIComponent(text)+'&body='+encodeURIComponent('Het dagrapport "'+fname+'" is op dit toestel opgeslagen; voeg het toe als bijlage aan deze mail.'); }catch(e){}
+  try{ location.href='mailto:'+encodeURIComponent(kantoorMail())+'?subject='+encodeURIComponent(text)+'&body='+encodeURIComponent('Het dagrapport "'+fname+'" is op dit toestel opgeslagen; voeg het toe als bijlage aan deze mail.'); }catch(e){}
   toast('Rapport opgeslagen — voeg het toe als bijlage in de mail');
 }
 $('#btnReport').onclick=shareDagrapport;
