@@ -529,7 +529,7 @@ async function setMailTo(m){ m=String(m||'').trim(); if(!m) return; mailTo=m; tr
 function fmtWeight(g){ if(g===''||g==null) return '—'; return /[a-z]/i.test(String(g))?g:g+' kg'; }
 function fmtTime(ts){ const d=new Date(ts); return d.toLocaleDateString('nl-NL',{day:'2-digit',month:'short'})+' · '+d.toLocaleTimeString('nl-NL',{hour:'2-digit',minute:'2-digit'}); }
 function drivers(){ return [...new Set(orders.map(o=>o.chauffeur).filter(Boolean))]; }
-function activeDrivers(){ return [...new Set(orders.filter(o=>o.status!=='done' && !o.extra).map(o=>o.chauffeur).filter(Boolean))]; }
+function activeDrivers(){ return [...new Set(orders.filter(o=>o.status!=='done' && !o.extra && !leftBehind(o)).map(o=>o.chauffeur).filter(Boolean))]; }
 function inFilter(o){ return filterDriver==='__all' || o.chauffeur===filterDriver; }
 
 function counts(){
@@ -553,11 +553,12 @@ function kantoorMail(){
   return m;
 }
 function plateOf(o){ const c=String(o&&o.chauffeur||''); const i=c.indexOf('/'); return (i>=0?c.slice(i+1):c).trim(); }   // kenteken = deel na "/" in de voertuignaam
-function routeOrders(){ return orders.filter(o=>!o.extra && o.status!=='done').filter(inFilter); }
+function routeOrders(){ return orders.filter(o=>!o.extra && o.status!=='done' && !leftBehind(o)).filter(inFilter); }
 function routeInscanComplete(){ const r=routeOrders(); return r.length>0 && r.every(inscanComplete); }
 function openMail(to,subject,body){ const url='mailto:'+encodeURIComponent(to)+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body); try{ location.href=url; }catch(e){ toast('Kon de mail niet openen'); } }
 function refOf(o){ return (o.referentie||o.relatie||'').trim(); }
 function ordRef(o){ const r=refOf(o); return o.ord+(r?'  '+r:''); }
+function klantMail(o){ return (o && o.klantmail) ? String(o.klantmail) : (KANTOOR_MAIL_DEFAULT||''); }   // TESTFASE: klantadres komt later
 function mailLoad(mode){
   const route=routeOrders();
   if(!route.length){ toast('Geen route geladen'); return; }
@@ -581,7 +582,7 @@ function mailLoad(mode){
     openMail(to, subject, body);
   }
   routeReported=true;
-  scanMode='uitscan'; applyScanMode(); setView('scanner');
+  scanMode='uitscan'; applyScanMode(); setView('scanner'); render();
   toast('Rit aangemeld — scanner staat nu op uitscannen');
 }
 function renderRitStart(){
@@ -659,7 +660,7 @@ function huisnr(adr){ const a=String(adr||''); const before=a.split(/\d{4}\s?[A-
 function num(v){ const f=parseFloat(String(v).replace(',','.')); return isNaN(f)?0:f; }
 
 function buildStops(){
-  const open=orders.filter(o=>o.status==='open').filter(inFilter);
+  const open=orders.filter(o=>o.status==='open' && !leftBehind(o)).filter(inFilter);
   const map=new Map();
   open.forEach(o=>{ const key=(o.adres||'??')+'|'+(o.relatie||''); if(!map.has(key)) map.set(key,{relatie:o.relatie,adres:o.adres,orders:[],weight:0,seq:Infinity,lt:''}); const g=map.get(key); g.orders.push(o); g.weight+=num(o.gewicht); if(o.volgorde!=null && o.volgorde<g.seq) g.seq=o.volgorde; if(o.tijdslevering && !g.lt) g.lt=o.tijdslevering; });
   const stops=[...map.values()];
@@ -722,7 +723,7 @@ function renderRoute(){
 /* ---------------- Inscan-overzicht (driver start hier) ---------------- */
 function renderInscan(){
   const host=$('#listScan'); if(!host) return;
-  const list=orders.filter(o=>o.status!=='done' && !o.extra).filter(inFilter);
+  const list=orders.filter(o=>o.status!=='done' && !o.extra && !leftBehind(o)).filter(inFilter);
   if(!list.length){ host.innerHTML=emptyState('open'); return; }
   list.sort((a,b)=> (inscanComplete(a)?1:0)-(inscanComplete(b)?1:0) || postcode(a.adres)-postcode(b.adres) || (String(a.ord)>String(b.ord)?1:-1));
   let html='';
@@ -739,9 +740,17 @@ function renderInscan(){
   });
   host.innerHTML=html;
   // bundels kunnen alleen via de camera-scan worden afgevinkt — handmatig aantikken markeert niet meer
-  host.querySelectorAll('.inchip').forEach(c=>c.onclick=()=>{
-    const o=orders.find(x=>x.uid===c.dataset.uid);
-    toast('Scan de bon'+(o?' van '+o.ord:'')+' (bundel '+c.dataset.b+') met de camera om af te vinken.');
+  host.querySelectorAll('.inchip').forEach(c=>c.onclick=async()=>{
+    const o=orders.find(x=>x.uid===c.dataset.uid); if(!o) return;
+    const b=parseInt(c.dataset.b,10), set=inscanList(o);
+    if(set.includes(b)){
+      if(!confirm('Weet je zeker dat bon '+o.ord+'.'+b+' niet meegaat?\nDe ingescande bundel wordt geannuleerd.')) return;
+      const i=set.indexOf(b); if(i>=0) set.splice(i,1);
+      await save(); renderInscan(); counts();
+      toast('Bundel '+o.ord+'.'+b+' geannuleerd \u2014 gaat niet mee');
+    } else {
+      toast('Scan de bon van '+o.ord+' (bundel '+b+') met de camera om af te vinken.');
+    }
   });
 }
 function activeViewId(){ const v=document.querySelector('.view.active'); return v?v.id:''; }
@@ -1156,6 +1165,7 @@ function inscanRequired(o){ return bundleCount(o)>FULL_SCAN_MAX; }
 function inscanList(o){ return Array.isArray(o.inscan)?o.inscan:(o.inscan=[]); }
 function inscanComplete(o){ return inscanList(o).length>=bundleCount(o); }
 function loadedBundles(o){ const n=bundleCount(o); const arr=(Array.isArray(o.inscan)?o.inscan:[]).filter(b=>Number.isInteger(b)&&b>=1&&b<=n); return arr.length?[...new Set(arr)].sort((a,b)=>a-b):Array.from({length:n},(_,i)=>i+1); }
+function leftBehind(o){ return routeReported && !o.extra && o.status!=='done' && inscanList(o).length===0; }
 function parseScan(val){
   val=String(val||'').trim();
   const m=val.match(/^(.+)\.(\d+)$/);            // ordernummer.bundelnummer  (bijv. 2119132.1)
@@ -1224,9 +1234,10 @@ function sessComplete(){
 function openUitlog(){ if(!amSession || !amSession.group.length) return; openAddressModal(amSession.group[0], null); }
 function uitscanTick(o, bundel){
   if(o.status==='done'){ toast('Order '+o.ord+' is al afgemeld'); return; }
+  if(leftBehind(o)){ toast('Order '+o.ord+' is niet meegegaan (niet ingeladen)'); return; }
   const addr=o.adres||'';
   if(!amSession || amSession.addr!==addr){
-    const group=orders.filter(x=>(x.adres||'')===addr && x.status!=='done');
+    const group=orders.filter(x=>(x.adres||'')===addr && x.status!=='done' && !leftBehind(x));
     if(!group.length){ toast('Order '+o.ord+' is al afgemeld'); return; }
     amSession={ addr, group, scanned:{} };
     toast('Afmelden: '+(o.relatie||group[0].relatie||addr));
@@ -1264,7 +1275,7 @@ function renderUitscanPanel(){
 function openAddressModal(scanned, preBundel){
   if(!routeReported){ toast('Meld eerst de rit bij “Rit aan-/afmelden” voordat je gaat uitscannen'); setView('import'); return; }
   const addr=scanned.adres||'';
-  const group=orders.filter(x=>(x.adres||'')===addr && x.status!=='done');
+  const group=orders.filter(x=>(x.adres||'')===addr && x.status!=='done' && !leftBehind(x));
   if(!group.length){ toast('Order '+scanned.ord+' is al afgemeld als geleverd'); return; }
   const sess=(amSession && amSession.addr===addr)?amSession:null;
   amState={photo:null, scanned: sess?sess.scanned:{}, allDelivered:{}, addr:addr, gpsOverride:false};
@@ -1458,31 +1469,32 @@ async function mailDelivery(uids, photoDataURL){
   const list=(uids||[]).map(u=>orders.find(o=>o.uid===u)).filter(Boolean);
   if(!list.length){ toast('Geen order gevonden'); return; }
   const o0=list[0];
-  const ords=list.map(o=>o.ord).join(', ');
-  const subject='Geleverd melding: '+ords;          // onderwerp = opsomming ordernummers
-  // GPS: opgeslagen locatie eerst (zo blijven we binnen de tik bij delen); alleen ophalen als er geen foto is meegegeven
+  const multi=list.length>1;
+  const ordsCompact=list.map(o=>o.ord).join('_');
+  const subject = multi ? 'Levering meerdere orders' : ('Geleverd: '+o0.ord+(refOf(o0)?(' '+refOf(o0)):''));
   let lat=o0.lat, lng=o0.lng;
   if((lat==null||lng==null) && !photoDataURL){ const p=await getPos(); if(p){ lat=+p.lat.toFixed(6); lng=+p.lng.toFixed(6); } }
   const maps=(lat!=null&&lng!=null)?('https://maps.google.com/?q='+lat+','+lng):'';
-  // per order: ordernummer + referentie van de klant; bij deellevering de niet-geleverde pakketten benoemen
-  const lines=list.map(o=>{
-    const ref=(o.referentie||o.relatie||'').trim();
-    let line=o.ord+(ref?('  '+ref):'');
-    if(o.status==='partial' && o.missing && o.missing.length) line+='  —  NALEVERING PAKKET '+o.missing.slice().sort((a,b)=>a-b).join(' ');
+  const addr=(o0.adres||'').trim();
+  const when=fmtFull(o0.deliveredAt||Date.now());
+  const orderLines=list.map(o=>{
+    const ref=refOf(o);
+    let line='\u2022 '+o.ord+(ref?('  '+ref):'');
+    if(o.status==='partial' && o.missing && o.missing.length) line+='  \u2014  NALEVERING PAKKET '+o.missing.slice().sort((a,b)=>a-b).join(' ');
     return line;
   }).join('\n');
-  const body=(maps?('GPS-locatie: '+maps+'\n\n'):'')+lines;
-  // foto: meegegeven (in geheugen, blijft binnen de tik) of anders uit opslag
+  const summary=(addr?('Afleveradres: '+addr+'\n'):'')+(maps?('GPS-locatie: '+maps+'\n'):'')+('Tijdstip: '+when+'\n')+'\n'+(multi?'Geleverde orders:':'Order:')+'\n'+orderLines;
+  const toKlant=klantMail(o0);          // TESTFASE: klantadres komt later
+  const ccKantoor=kantoorMail();        // TESTFASE: kantooradres
   let photoFile=null;
-  try{ let d=photoDataURL; if(!d) d=await store.get('photo:'+o0.uid); if(d) photoFile=dataURLtoFile(d, 'bezorgfoto_'+String(ords).replace(/[^0-9]+/g,'_')+'.jpg'); }catch(e){}
-  // 1) telefoon: delen mét foto-bijlage (ontvanger in de tekst — leeg laten als niet ingesteld)
-  const to=kantoorMail()||mailTo;   // TESTFASE: bevestiging gaat naar het kantooradres
+  try{ let d=photoDataURL; if(!d) d=await store.get('photo:'+o0.uid); if(d) photoFile=dataURLtoFile(d, 'bezorgfoto_'+ordsCompact.replace(/[^0-9]+/g,'_')+'.jpg'); }catch(e){}
   if(photoFile && navigator.canShare && navigator.canShare({files:[photoFile]})){
-    try{ await navigator.share({files:[photoFile], title:subject, text:(to?('Mailen naar: '+to+'\n\n'):'')+body}); return; }
+    const head='Aan: '+toKlant+'\nCC: '+ccKantoor+'\n\n';
+    try{ await navigator.share({files:[photoFile], title:subject, text:head+summary}); return; }
     catch(e){ if(e && e.name==='AbortError') return; }
   }
-  // 2) mailto-fallback: ontvanger (leeg indien niet ingesteld) + onderwerp + tekst (zonder foto-bijlage)
-  const url='mailto:'+encodeURIComponent(to||'')+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body+(photoFile?'\n\n(De bezorgfoto staat op dit toestel — voeg \u2019m toe als bijlage.)':''));
+  if(photoFile){ try{ const a=document.createElement('a'); a.href=URL.createObjectURL(photoFile); a.download=photoFile.name||'bezorgfoto.jpg'; document.body.appendChild(a); a.click(); setTimeout(()=>{ try{ URL.revokeObjectURL(a.href); }catch(_){} a.remove(); },2000); }catch(e){} }
+  const url='mailto:'+encodeURIComponent(toKlant||'')+'?cc='+encodeURIComponent(ccKantoor||'')+'&subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(summary+(photoFile?'\n\n(De bezorgfoto is gedownload \u2014 voeg \u2019m toe als bijlage.)':''));
   try{ location.href=url; }catch(e){ toast('Kon de mail niet openen'); }
 }
 
