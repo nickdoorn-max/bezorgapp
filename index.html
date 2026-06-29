@@ -1599,6 +1599,7 @@ async function exportControl(){
       lat:(o.lat!=null?o.lat:null), lng:(o.lng!=null?o.lng:null), acc:(o.acc!=null?o.acc:null),
       bundels:bundleCount(o), ingescand:Array.isArray(o.inscan)?o.inscan.slice():[],
       missing:Array.isArray(o.missing)?o.missing.slice():[],
+      volgorde:(o.volgorde!=null?o.volgorde:null), levertijd:o.levertijd||'', tijdslevering:o.tijdslevering||'',
       note:o.note||'', extra:!!o.extra, extraReason:o.extraReason||'', photo:photo
     });
   }
