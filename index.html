@@ -534,14 +534,14 @@ function counts(){
 }
 
 /* ---------------- Rit melden aan kantoor (inscan compleet / missende pakketten) ---------------- */
-/* Ontvanger van de meldingen (kantoor) — niet in de broncode; per toestel instelbaar en bewaard. */
-function kantoorMail(promptIfEmpty){
+/* Ontvanger van de meldingen (kantoor).
+   TESTFASE: standaard naar nick.vandoorn@arcelormittal.com.
+   Een eventueel per toestel ingesteld adres (localStorage 'kantoorMail') gaat vóór.
+   Na de testfase: zet KANTOOR_MAIL_DEFAULT terug op '' om weer per toestel in te stellen. */
+const KANTOOR_MAIL_DEFAULT='nick.vandoorn@arcelormittal.com';
+function kantoorMail(){
   let m=''; try{ m=(localStorage.getItem('kantoorMail')||'').trim(); }catch(e){}
-  if(!m && promptIfEmpty){
-    m=(prompt('E-mailadres van kantoor (ontvanger van de meldingen):','')||'').trim();
-    if(m){ try{ localStorage.setItem('kantoorMail', m); }catch(e){} }
-  }
-  return m;
+  return m || KANTOOR_MAIL_DEFAULT;
 }
 function plateOf(o){ const c=String(o&&o.chauffeur||''); const i=c.indexOf('/'); return (i>=0?c.slice(i+1):c).trim(); }   // kenteken = deel na "/" in de voertuignaam
 function routeOrders(){ return orders.filter(o=>!o.extra).filter(inFilter); }
@@ -552,7 +552,7 @@ function ordRef(o){ const r=refOf(o); return o.ord+(r?'  '+r:''); }
 function mailLoad(mode){
   const route=routeOrders();
   if(!route.length){ toast('Geen route geladen'); return; }
-  const to=kantoorMail(true);
+  const to=kantoorMail();
   const plate=[...new Set(route.map(plateOf))].filter(Boolean).join(', ')||'onbekend';
   const sorted=route.slice().sort((a,b)=>((a.volgorde==null?1e9:a.volgorde)-(b.volgorde==null?1e9:b.volgorde))||(String(a.ord)>String(b.ord)?1:-1));
   if(mode==='compleet'){
