@@ -764,8 +764,8 @@ async function inscanTick(o,bundel){
   else { set.push(b); set.sort((a,c)=>a-c); await save(); added=true; toast('Ingescand: '+o.ord+'.'+b+'  ('+set.length+'/'+n+')'+(set.length>=n?' ✓ compleet':'')); }
   renderInscan(); counts();
   if(added && routeInscanComplete() && !routeReported && !(filterDriver==='__all' && drivers().length>1)){
-    toast('🚚 Route compleet — melden aan kantoor…');
-    mailLoad('compleet');
+    toast('🚚 Route compleet — meld ‘m bij Rit aan-/afmelden');
+    renderRitStart(); setView('import');
   }
 }
 function deliverScanTick(o,bundel){
