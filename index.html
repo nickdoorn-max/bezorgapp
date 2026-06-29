@@ -362,11 +362,9 @@
 
       <div class="block">
         <h2>Rit afmelden — einde dag</h2>
-        <p class="sub">Exporteer de afgemelde orders of begin een nieuwe dag met een schone route.</p>
+        <p class="sub">Mail de rit door voor controle, of begin een nieuwe dag met een schone route.</p>
         <div class="btnstack">
-          <button class="btn primary full" id="btnReport">Dagrapport mailen (foto's &amp; GPS)</button>
           <button class="btn primary full" id="btnControl">Rit doormailen voor controle (orders + foto's + GPS)</button>
-          <button class="btn ghost full" id="btnExport">Exporteer geleverd (CSV)</button>
           <button class="btn danger full" id="btnClear">Alles wissen</button>
         </div>
       </div>
@@ -377,10 +375,6 @@
     <button data-view="scanner">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M3 12h18"/></svg>
       Scanner<span class="badge" id="badgeScan" style="display:none">0</span>
-    </button>
-    <button data-view="open">
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h13l5 5v5h-3"/><path d="M3 7v10h2"/><circle cx="7.5" cy="17.5" r="2"/><circle cx="17.5" cy="17.5" r="2"/></svg>
-      Te leveren<span class="badge" id="badgeOpen" style="display:none">0</span>
     </button>
     <button data-view="route">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="2.4"/><circle cx="18" cy="5" r="2.4"/><path d="M8 19h6.5a3.5 3.5 0 0 0 0-7h-4a3.5 3.5 0 0 1 0-7H16"/></svg>
@@ -545,7 +539,7 @@ function inFilter(o){ return filterDriver==='__all' || o.chauffeur===filterDrive
 function counts(){
   const open=orders.filter(o=>o.status!=='done').length, done=orders.length-open;
   $('#cOpen').textContent=open+' te leveren'; $('#cDone').textContent=done+' geleverd';
-  const b=$('#badgeOpen'); if(open>0){b.style.display='';b.textContent=open;}else b.style.display='none';
+  const b=$('#badgeOpen'); if(b){ if(open>0){b.style.display='';b.textContent=open;}else b.style.display='none'; }
   const inReq=orders.filter(o=>o.status!=='done'&&!o.extra&&!inscanComplete(o)).length;
   const bi=$('#badgeScan'); if(bi){ if(inReq>0){bi.style.display='';bi.textContent=inReq;}else bi.style.display='none'; }
   renderRitStart();
@@ -1090,7 +1084,7 @@ function renderExtraList(){
   host.querySelectorAll('.exdel').forEach(b=>b.onclick=async(e)=>{ e.stopPropagation(); const uid=b.dataset.uid; if(!confirm('Losse order verwijderen?')) return; const o=orders.find(x=>x.uid===uid); if(o&&o.hasPhoto) await store.del('photo:'+uid); orders=orders.filter(x=>x.uid!==uid); await save(); await render(); });
 }
 
-$('#btnExport').onclick=()=>{
+if($('#btnExport')) $('#btnExport').onclick=()=>{
   const list=orders.filter(o=>o.status==='done'||o.status==='partial').sort((a,b)=>a.deliveredAt-b.deliveredAt);
   if(!list.length){toast('Nog geen geleverde of deels-geleverde orders');return;}
   const head=['Chauffeur','Ordernummer','Relatie','Bestemmingsadres','Aantal','Gewicht','Status','Ontbrekende bundels','Geleverd op','Notitie'];
@@ -1223,6 +1217,7 @@ function updateAmRow(uid){
   const cnt=row.querySelector('.amcount'); if(cnt){ cnt.textContent=set.size+'/'+n+' gescand'; cnt.classList.toggle('ok',set.size>=n); }
 }
 function openAddressModal(scanned, preBundel){
+  if(!routeReported){ toast('Meld eerst de rit bij “Rit aan-/afmelden” voordat je gaat uitscannen'); setView('import'); return; }
   const addr=scanned.adres||'';
   const group=orders.filter(x=>(x.adres||'')===addr && x.status!=='done');
   if(!group.length){ toast('Order '+scanned.ord+' is al afgemeld als geleverd'); return; }
@@ -1488,7 +1483,7 @@ async function shareDagrapport(){
   try{ location.href='mailto:'+encodeURIComponent(kantoorMail())+'?subject='+encodeURIComponent(text)+'&body='+encodeURIComponent('Het dagrapport "'+fname+'" is op dit toestel opgeslagen; voeg het toe als bijlage aan deze mail.'); }catch(e){}
   toast('Rapport opgeslagen — voeg het toe als bijlage in de mail');
 }
-$('#btnReport').onclick=shareDagrapport;
+if($('#btnReport')) $('#btnReport').onclick=shareDagrapport;
 
 /* ---- Rittencontrole-bestand: alle orders + status + GPS + foto's, herbruikbaar in de Rittencontrole-tool ---- */
 async function exportControl(){
