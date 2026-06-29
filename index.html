@@ -216,6 +216,7 @@
   .amdrop{border:2px dashed var(--line); border-radius:12px; background:var(--card); aspect-ratio:16/10; display:grid; place-items:center; text-align:center; color:var(--muted); position:relative; overflow:hidden; font-weight:600}
   .amdrop img{position:absolute; inset:0; width:100%; height:100%; object-fit:cover}
   .amchip.scan{background:var(--green); border-color:var(--green); color:#fff}
+  .amchip.unloaded{opacity:.32; cursor:default}
   .amcount{flex:0 0 auto; font:700 12px var(--mono); color:var(--muted)}
   .amcount.ok{color:var(--green)}
   .ambundles .amhintline{grid-column:1/-1; font:600 11px var(--sans); color:var(--muted); margin:2px 0 0}
@@ -248,6 +249,7 @@
   .inchips{display:grid; grid-template-columns:repeat(6,1fr); gap:6px; margin-top:10px}
   .inchip{aspect-ratio:1; border:1.5px solid var(--line); border-radius:8px; background:var(--paper); color:var(--ink-2); font:700 13px var(--mono); display:grid; place-items:center; cursor:pointer}
   .inchip.on{background:var(--green); border-color:var(--green); color:#fff}
+  .inchip.off{opacity:.32}
   .inprog{font:700 12px var(--mono); color:var(--muted); margin-top:9px}
   .inprog.ok{color:var(--green)}
   .usrow{border:1px solid var(--line); border-radius:10px; padding:10px 11px; margin-bottom:8px; background:var(--card)}
@@ -527,6 +529,7 @@ async function setMailTo(m){ m=String(m||'').trim(); if(!m) return; mailTo=m; tr
 function fmtWeight(g){ if(g===''||g==null) return '—'; return /[a-z]/i.test(String(g))?g:g+' kg'; }
 function fmtTime(ts){ const d=new Date(ts); return d.toLocaleDateString('nl-NL',{day:'2-digit',month:'short'})+' · '+d.toLocaleTimeString('nl-NL',{hour:'2-digit',minute:'2-digit'}); }
 function drivers(){ return [...new Set(orders.map(o=>o.chauffeur).filter(Boolean))]; }
+function activeDrivers(){ return [...new Set(orders.filter(o=>o.status!=='done' && !o.extra).map(o=>o.chauffeur).filter(Boolean))]; }
 function inFilter(o){ return filterDriver==='__all' || o.chauffeur===filterDriver; }
 
 function counts(){
@@ -550,7 +553,7 @@ function kantoorMail(){
   return m;
 }
 function plateOf(o){ const c=String(o&&o.chauffeur||''); const i=c.indexOf('/'); return (i>=0?c.slice(i+1):c).trim(); }   // kenteken = deel na "/" in de voertuignaam
-function routeOrders(){ return orders.filter(o=>!o.extra).filter(inFilter); }
+function routeOrders(){ return orders.filter(o=>!o.extra && o.status!=='done').filter(inFilter); }
 function routeInscanComplete(){ const r=routeOrders(); return r.length>0 && r.every(inscanComplete); }
 function openMail(to,subject,body){ const url='mailto:'+encodeURIComponent(to)+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body); try{ location.href=url; }catch(e){ toast('Kon de mail niet openen'); } }
 function refOf(o){ return (o.referentie||o.relatie||'').trim(); }
@@ -583,7 +586,7 @@ function mailLoad(mode){
 }
 function renderRitStart(){
   const host=$('#ritStartBody'); if(!host) return;
-  if(filterDriver==='__all' && drivers().length>1){
+  if(filterDriver==='__all' && activeDrivers().length>1){
     host.innerHTML='<div class="ritbanner neutral">Meerdere routes geladen. Tik op de <b>Scanner</b>-tab eerst je eigen route aan om hier te melden.</div>'; return;
   }
   const route=routeOrders();
@@ -680,7 +683,7 @@ function mapsUrl(all){
 
 function renderRoute(){
   const host=$('#routeBody'); if(!host) return;
-  if(filterDriver==='__all' && drivers().length>1){
+  if(filterDriver==='__all' && activeDrivers().length>1){
     host.innerHTML=`<div class="empty"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6" cy="19" r="2.4"/><circle cx="18" cy="5" r="2.4"/><path d="M8 19h6.5a3.5 3.5 0 0 0 0-7h-4a3.5 3.5 0 0 1 0-7H16"/></svg><h3>Kies een chauffeur</h3><p>Tik hierboven op een naam om diens route te zien.</p></div>`;
     return;
   }
@@ -750,7 +753,7 @@ async function inscanTick(o,bundel){
   if(set.includes(b)){ toast('Bundel '+o.ord+'.'+b+' was al ingescand'); }
   else { set.push(b); set.sort((a,c)=>a-c); await save(); added=true; toast('Ingescand: '+o.ord+'.'+b+'  ('+set.length+'/'+n+')'+(set.length>=n?' ✓ compleet':'')); }
   renderInscan(); counts();
-  if(added && routeInscanComplete() && !routeReported && !(filterDriver==='__all' && drivers().length>1)){
+  if(added && routeInscanComplete() && !routeReported && !(filterDriver==='__all' && activeDrivers().length>1)){
     toast('🚚 Route compleet — meld ‘m bij Rit aan-/afmelden');
     renderRitStart(); setView('import');
   }
@@ -1152,6 +1155,7 @@ function bundleCount(o){ const n=parseInt(String(o.aantal||'').replace(/\D+/g,''
 function inscanRequired(o){ return bundleCount(o)>FULL_SCAN_MAX; }
 function inscanList(o){ return Array.isArray(o.inscan)?o.inscan:(o.inscan=[]); }
 function inscanComplete(o){ return inscanList(o).length>=bundleCount(o); }
+function loadedBundles(o){ const n=bundleCount(o); const arr=(Array.isArray(o.inscan)?o.inscan:[]).filter(b=>Number.isInteger(b)&&b>=1&&b<=n); return arr.length?[...new Set(arr)].sort((a,b)=>a-b):Array.from({length:n},(_,i)=>i+1); }
 function parseScan(val){
   val=String(val||'').trim();
   const m=val.match(/^(.+)\.(\d+)$/);            // ordernummer.bundelnummer  (bijv. 2119132.1)
@@ -1208,13 +1212,14 @@ function amBundleSet(uid){ if(!(amState.scanned[uid] instanceof Set)) amState.sc
 function updateAmRow(uid){
   const row=$('#amList').querySelector('.amrow[data-uid="'+uid+'"]'); if(!row) return;
   const o=orders.find(x=>x.uid===uid); if(!o) return; const n=bundleCount(o); const set=amBundleSet(uid);
+  const loaded=loadedBundles(o), L=loaded.length, sc=loaded.filter(b=>set.has(b)).length, partial=L<n;
   row.querySelectorAll('.amchip').forEach(c=>c.classList.toggle('scan',set.has(+c.dataset.b)));
-  const cnt=row.querySelector('.amcount'); if(cnt){ cnt.textContent=set.size+'/'+n+' gescand'; cnt.classList.toggle('ok',set.size>=n); }
+  const cnt=row.querySelector('.amcount'); if(cnt){ cnt.textContent=sc+'/'+L+' gescand'+(partial?(' · '+L+'/'+n+' ingeladen'):''); cnt.classList.toggle('ok',sc>=L); }
 }
 /* ---- Uitscannen: eerst alle bonnen van het adres scannen, dan pas het uitlog-scherm ---- */
 function sessComplete(){
   if(!amSession || !amSession.group.length) return false;
-  return amSession.group.every(o=>{ const set=amSession.scanned[o.uid]; const has=set?set.size:0; return inscanRequired(o)?has>=1:has>=bundleCount(o); });
+  return amSession.group.every(o=>{ const set=amSession.scanned[o.uid]; if(inscanRequired(o)) return !!set && set.size>=1; const loaded=loadedBundles(o); return loaded.every(b=>set&&set.has(b)); });
 }
 function openUitlog(){ if(!amSession || !amSession.group.length) return; openAddressModal(amSession.group[0], null); }
 function uitscanTick(o, bundel){
@@ -1232,8 +1237,9 @@ function uitscanTick(o, bundel){
   else {
     let b=bundel; if(b==null){ if(n===1) b=1; else { toast('Scan met bundelnummer — order '+o.ord+' heeft '+n+' bundels'); renderUitscanPanel(); return; } }
     if(b<1||b>n){ toast('Bundel '+b+' bestaat niet (order '+o.ord+')'); return; }
+    const loaded=loadedBundles(o);
     if(set.has(b)) toast('Bundel '+o.ord+'.'+b+' was al gescand');
-    else { set.add(b); toast('Gescand: '+o.ord+'.'+b+' ('+set.size+'/'+n+')'); }
+    else { set.add(b); const sc=loaded.filter(x=>set.has(x)).length; toast(loaded.includes(b)?('Gescand: '+o.ord+'.'+b+' ('+sc+'/'+loaded.length+')'):('Let op: '+o.ord+'.'+b+' was niet ingeladen — wordt wel afgemeld')); }
   }
   renderUitscanPanel();
   if(sessComplete()) openUitlog();
@@ -1244,9 +1250,11 @@ function renderUitscanPanel(){
   const g=amSession.group, rel=(g[0]&&g[0].relatie)||amSession.addr;
   let rows='';
   g.forEach(o=>{
-    const n=bundleCount(o), set=amSession.scanned[o.uid], has=set?set.size:0, big=inscanRequired(o), done=big?has>=1:has>=n;
-    let chips=''; if(!big){ for(let i=1;i<=n;i++) chips+=`<div class="inchip${set&&set.has(i)?' on':''}">${i}</div>`; }
-    rows+=`<div class="usrow"><div class="ustop"><span class="usord">${esc(o.ord)}</span><span class="uscount${done?' ok':''}">${big?(has?'gereed — bevestig bij afmelden':'10+ pakketten'):(has+'/'+n+' gescand'+(done?' \u2713':''))}</span></div>${big?'':`<div class="inchips">${chips}</div>`}</div>`;
+    const n=bundleCount(o), set=amSession.scanned[o.uid], big=inscanRequired(o);
+    const loaded=loadedBundles(o), L=loaded.length, sc=loaded.filter(b=>set&&set.has(b)).length, done=big?(!!set&&set.size>=1):(sc>=L), partial=L<n;
+    let chips=''; if(!big){ for(let i=1;i<=n;i++){ const isL=loaded.includes(i), on=set&&set.has(i); chips+=`<div class="inchip${on?' on':''}${isL?'':' off'}">${i}</div>`; } }
+    const label=big?(set&&set.size?'gereed — bevestig bij afmelden':'10+ pakketten'):(sc+'/'+L+' gescand'+(done?' \u2713':'')+(partial?(' · '+L+'/'+n+' ingeladen'):''));
+    rows+=`<div class="usrow"><div class="ustop"><span class="usord">${esc(o.ord)}</span><span class="uscount${done?' ok':''}">${label}</span></div>${big?'':`<div class="inchips">${chips}</div>`}</div>`;
   });
   host.innerHTML=`<h2 style="margin:0 0 2px">Afmelden \u2014 ${esc(rel)}</h2><p class="sub" style="margin:0 0 10px">${esc(amSession.addr)}</p>${rows}<button class="btn primary full" id="btnUitlog" style="margin-top:10px">Afmelden \u2014 foto maken</button><button class="btn ghost full" id="btnUitcancel" style="margin-top:6px">Annuleer</button>`;
   host.style.display='';
@@ -1291,8 +1299,9 @@ function openAddressModal(scanned, preBundel){
     const chk=row.querySelector('.amchk'); chk.onchange=()=>row.classList.toggle('on',chk.checked);
     const grid=row.querySelector('.ambundles');
     if(grid){
-      let g=''; for(let i=1;i<=n;i++) g+=`<div class="amchip" data-b="${i}">${i}</div>`;
-      g+=`<div class="amhintline">Scan elke bundel</div>`;
+      const loaded=loadedBundles(o); const partial=loaded.length<n;
+      let g=''; for(let i=1;i<=n;i++){ const isL=loaded.includes(i); g+=`<div class="amchip${isL?'':' unloaded'}" data-b="${i}">${i}</div>`; }
+      g+=`<div class="amhintline">${partial?'Grijze bundels zijn niet ingeladen — scan de rest':'Scan elke bundel'}</div>`;
       grid.innerHTML=g;
     }
     const allBtn=row.querySelector('.amalldlv');
