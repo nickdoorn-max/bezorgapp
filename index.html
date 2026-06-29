@@ -836,6 +836,8 @@ function applyScanMode(){
   const inMode = scanMode==='inscan';
   if($('#modeIn')) $('#modeIn').classList.toggle('active', inMode);
   if($('#modeUit')) $('#modeUit').classList.toggle('active', !inMode);
+  if($('#modeIn')) $('#modeIn').style.display = routeReported ? 'none' : '';
+  if($('#modeUit')) $('#modeUit').style.display = routeReported ? '' : 'none';
   if($('#scanHint')) $('#scanHint').textContent = inMode
     ? 'Inscannen: scan bij het inladen elke pakbon van elke order volledig.'
     : 'Uitscannen: scan op locatie de pakbon om af te melden. Orders met meer dan 9 pakketten bevestig je daar met “alle pakketten geleverd”.';
@@ -1104,7 +1106,7 @@ $('#btnExport').onclick=()=>{
 $('#btnClear').onclick=async()=>{
   if(!confirm('Alle orders en foto\'s wissen? Dit kan niet ongedaan worden gemaakt.')) return;
   for(const o of orders){ if(o.hasPhoto) await store.del('photo:'+o.uid); }
-  orders=[]; filterDriver='__all'; routeReported=false; await store.del(KEY); await render(); toast('Route geleegd');
+  orders=[]; filterDriver='__all'; routeReported=false; await store.del(KEY); await render(); applyScanMode(); toast('Route geleegd');
 };
 
 let camStream=null, camRunning=false, detector=null, scanCanvas=null;
