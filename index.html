@@ -250,6 +250,11 @@
   .inchip.on{background:var(--green); border-color:var(--green); color:#fff}
   .inprog{font:700 12px var(--mono); color:var(--muted); margin-top:9px}
   .inprog.ok{color:var(--green)}
+  .usrow{border:1px solid var(--line); border-radius:10px; padding:10px 11px; margin-bottom:8px; background:var(--card)}
+  .ustop{display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px}
+  .usord{font-family:var(--mono); font-weight:700}
+  .uscount{font:700 12px var(--mono); color:var(--muted)}
+  .uscount.ok{color:var(--green)}
   .scanmode{display:flex; gap:8px; margin-bottom:12px}
   .area{resize:vertical; min-height:46px; font:inherit; line-height:1.4}
   .exrow{display:flex; align-items:center; gap:10px; padding:11px 12px; border:1px solid var(--line); border-radius:12px; background:var(--card); margin-bottom:8px; cursor:pointer}
@@ -308,6 +313,7 @@
         </div>
       </div>
       <p class="sub" id="scanHint" style="margin:2px 2px 12px"></p>
+      <div id="uitscanPanel" class="block" style="display:none"></div>
       <div class="drivers" id="driversScan"></div>
       <div id="listScan"></div>
     </section>
@@ -334,19 +340,6 @@
     </section>
 
     <section class="view active" id="view-import">
-      <div class="block">
-        <h2>Rit aanmelden — route laden</h2>
-        <p class="sub">Geplande en geoptimaliseerde route? Exporteer 'm in de Ritplanner. <b>Sneller:</b> klik daar op de QR-knop van je route en scan 'm hier met de camera (tab <b>Scanner</b>) — de route laadt direct in. Of laad het .json-bestand hieronder.</p>
-        <label class="filelabel">
-          <div class="dropzone">
-            <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="2.4"/><circle cx="18" cy="5" r="2.4"/><path d="M8 19h6.5a3.5 3.5 0 0 0 0-7h-4a3.5 3.5 0 0 1 0-7H16"/></svg>
-            <b>Kies Ritplanner-bestand (.json)</b>
-            <span>route per chauffeur, in geoptimaliseerde volgorde</span>
-          </div>
-          <input type="file" id="fileJson" accept=".json,application/json">
-        </label>
-      </div>
-
       <div class="block">
         <h2>Losse / extra order</h2>
         <button class="btn primary full" id="btnScanExtra">Pakbon scannen</button>
@@ -527,7 +520,7 @@ const tapeColor=o=>o&&(o.tape||o.color)||'';                              // ord
 const tapeDot=o=>{ const c=tapeColor(o); return c?`<span class="tapedot" style="background:${c}" title="tapekleur"></span>`:''; };
 const uid=()=>'o'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 
-async function load(){ const raw=await store.get(KEY); if(raw){try{orders=JSON.parse(raw)||[];}catch(e){orders=[];}} try{ const m=await store.get(MAILKEY); if(m) mailTo=String(m); }catch(e){} await render(); setView(orders.length?'scanner':'import'); }
+async function load(){ const raw=await store.get(KEY); if(raw){try{orders=JSON.parse(raw)||[];}catch(e){orders=[];}} try{ const m=await store.get(MAILKEY); if(m) mailTo=String(m); }catch(e){} await render(); setView('scanner'); }
 async function save(){ await store.set(KEY, JSON.stringify(orders)); }
 async function setMailTo(m){ m=String(m||'').trim(); if(!m) return; mailTo=m; try{ await store.set(MAILKEY,m); }catch(e){} }
 
@@ -826,6 +819,7 @@ if($('#scanCamStart')) $('#scanCamStart').onclick=()=>startInlineCam('#camScan',
 /* ---- scanner-modus: één scanner voor in- én uitscannen ---- */
 let scanMode='inscan';   // 'inscan' (inladen) | 'uitscan' (op locatie afmelden)
 let routeReported=false; // route aangemeld? voorkomt dubbel automatisch mailen
+let amSession=null;      // actieve uitscan-sessie per afleveradres
 function applyScanMode(){
   const inMode = scanMode==='inscan';
   if($('#modeIn')) $('#modeIn').classList.toggle('active', inMode);
@@ -834,10 +828,11 @@ function applyScanMode(){
   if($('#modeUit')) $('#modeUit').style.display = routeReported ? '' : 'none';
   if($('#scanHint')) $('#scanHint').textContent = inMode
     ? 'Inscannen: scan bij het inladen elke pakbon van elke order volledig.'
-    : 'Uitscannen: scan op locatie de pakbon om af te melden. Orders met meer dan 9 pakketten bevestig je daar met “alle pakketten geleverd”.';
+    : 'Uitscannen: scan alle pakbonnen van dit adres. Zodra alles binnen is opent automatisch het afmeldscherm voor de foto. 10+ pakketten bevestig je daar.';
   if($('#listScan')) $('#listScan').style.display = inMode ? '' : 'none';
   if($('#driversScan')) $('#driversScan').style.display = inMode ? '' : 'none';
   if($('#camScan')) { const t=$('#scanScanner') && $('#scanScanner').querySelector('.incamtxt'); if(t) t.textContent = inMode?'Scan de pakbon (inladen)':'Scan de pakbon (afmelden)'; }
+  renderUitscanPanel();
 }
 if($('#modeIn')) $('#modeIn').onclick=()=>{ scanMode='inscan'; applyScanMode(); renderInscan(); };
 if($('#modeUit')) $('#modeUit').onclick=()=>{ scanMode='uitscan'; applyScanMode(); };
@@ -938,7 +933,7 @@ async function importOrders(list, label){
   toast(nieuw+' orders ingelezen'+(label?' · '+label:''));
   routeReported=false; scanMode='inscan'; setView('scanner'); applyScanMode();   // nieuwe route: weer inscannen
 }
-$('#fileJson').onchange=e=>{
+if($('#fileJson')) $('#fileJson').onchange=e=>{
   const f=e.target.files[0]; if(!f) return;
   const r=new FileReader();
   r.onload=async()=>{
@@ -1201,7 +1196,7 @@ function handleScan(val){
     return;
   }
   if($('#amodal').classList.contains('show')){ deliverScanTick(o,bundel); return; }   // afmelden op locatie: bundel afvinken
-  if(activeViewId()==='view-scanner'){ if(scanMode==='inscan'){ if(o.extra){ toast('Losse order — beheer ‘m bij Rit aan-/afmelden'); return; } inscanTick(o,bundel); } else openAddressModal(o,bundel); return; }
+  if(activeViewId()==='view-scanner'){ if(scanMode==='inscan'){ if(o.extra){ toast('Losse order — beheer ‘m bij Rit aan-/afmelden'); return; } inscanTick(o,bundel); } else uitscanTick(o,bundel); return; }
   openAddressModal(o, bundel);                                                        // start afmelden op locatie
 }
 
@@ -1216,12 +1211,55 @@ function updateAmRow(uid){
   row.querySelectorAll('.amchip').forEach(c=>c.classList.toggle('scan',set.has(+c.dataset.b)));
   const cnt=row.querySelector('.amcount'); if(cnt){ cnt.textContent=set.size+'/'+n+' gescand'; cnt.classList.toggle('ok',set.size>=n); }
 }
+/* ---- Uitscannen: eerst alle bonnen van het adres scannen, dan pas het uitlog-scherm ---- */
+function sessComplete(){
+  if(!amSession || !amSession.group.length) return false;
+  return amSession.group.every(o=>{ const set=amSession.scanned[o.uid]; const has=set?set.size:0; return inscanRequired(o)?has>=1:has>=bundleCount(o); });
+}
+function openUitlog(){ if(!amSession || !amSession.group.length) return; openAddressModal(amSession.group[0], null); }
+function uitscanTick(o, bundel){
+  if(o.status==='done'){ toast('Order '+o.ord+' is al afgemeld'); return; }
+  const addr=o.adres||'';
+  if(!amSession || amSession.addr!==addr){
+    const group=orders.filter(x=>(x.adres||'')===addr && x.status!=='done');
+    if(!group.length){ toast('Order '+o.ord+' is al afgemeld'); return; }
+    amSession={ addr, group, scanned:{} };
+    toast('Afmelden: '+(o.relatie||group[0].relatie||addr));
+  }
+  if(!(amSession.scanned[o.uid] instanceof Set)) amSession.scanned[o.uid]=new Set();
+  const set=amSession.scanned[o.uid], n=bundleCount(o);
+  if(inscanRequired(o)){ set.add(bundel!=null?bundel:1); }
+  else {
+    let b=bundel; if(b==null){ if(n===1) b=1; else { toast('Scan met bundelnummer — order '+o.ord+' heeft '+n+' bundels'); renderUitscanPanel(); return; } }
+    if(b<1||b>n){ toast('Bundel '+b+' bestaat niet (order '+o.ord+')'); return; }
+    if(set.has(b)) toast('Bundel '+o.ord+'.'+b+' was al gescand');
+    else { set.add(b); toast('Gescand: '+o.ord+'.'+b+' ('+set.size+'/'+n+')'); }
+  }
+  renderUitscanPanel();
+  if(sessComplete()) openUitlog();
+}
+function renderUitscanPanel(){
+  const host=$('#uitscanPanel'); if(!host) return;
+  if(!amSession || scanMode!=='uitscan' || !amSession.group.length){ host.style.display='none'; host.innerHTML=''; return; }
+  const g=amSession.group, rel=(g[0]&&g[0].relatie)||amSession.addr;
+  let rows='';
+  g.forEach(o=>{
+    const n=bundleCount(o), set=amSession.scanned[o.uid], has=set?set.size:0, big=inscanRequired(o), done=big?has>=1:has>=n;
+    let chips=''; if(!big){ for(let i=1;i<=n;i++) chips+=`<div class="inchip${set&&set.has(i)?' on':''}">${i}</div>`; }
+    rows+=`<div class="usrow"><div class="ustop"><span class="usord">${esc(o.ord)}</span><span class="uscount${done?' ok':''}">${big?(has?'gereed — bevestig bij afmelden':'10+ pakketten'):(has+'/'+n+' gescand'+(done?' \u2713':''))}</span></div>${big?'':`<div class="inchips">${chips}</div>`}</div>`;
+  });
+  host.innerHTML=`<h2 style="margin:0 0 2px">Afmelden \u2014 ${esc(rel)}</h2><p class="sub" style="margin:0 0 10px">${esc(amSession.addr)}</p>${rows}<button class="btn primary full" id="btnUitlog" style="margin-top:10px">Afmelden \u2014 foto maken</button><button class="btn ghost full" id="btnUitcancel" style="margin-top:6px">Annuleer</button>`;
+  host.style.display='';
+  const a=$('#btnUitlog'); if(a) a.onclick=openUitlog;
+  const c=$('#btnUitcancel'); if(c) c.onclick=()=>{ amSession=null; renderUitscanPanel(); toast('Afmelden geannuleerd'); };
+}
 function openAddressModal(scanned, preBundel){
   if(!routeReported){ toast('Meld eerst de rit bij “Rit aan-/afmelden” voordat je gaat uitscannen'); setView('import'); return; }
   const addr=scanned.adres||'';
   const group=orders.filter(x=>(x.adres||'')===addr && x.status!=='done');
   if(!group.length){ toast('Order '+scanned.ord+' is al afgemeld als geleverd'); return; }
-  amState={photo:null, scanned:{}, allDelivered:{}, addr:addr, gpsOverride:false};
+  const sess=(amSession && amSession.addr===addr)?amSession:null;
+  amState={photo:null, scanned: sess?sess.scanned:{}, allDelivered:{}, addr:addr, gpsOverride:false};
   geocodeAddr(addr);   // alvast ophalen (gecachet) voor de GPS-controle
   $('#amRel').textContent=scanned.relatie||group[0].relatie||'Onbekende klant';
   $('#amAdr').textContent=addr||'—';
@@ -1261,7 +1299,7 @@ function openAddressModal(scanned, preBundel){
     if(allBtn) allBtn.onclick=()=>openAllDelivered(uid);
   });
   // bundel die het scannen opende meteen afvinken
-  if(!inscanRequired(scanned)){
+  if(!sess && !inscanRequired(scanned)){
     const set=amBundleSet(scanned.uid); const n=bundleCount(scanned);
     if(preBundel!=null && preBundel>=1 && preBundel<=n) set.add(preBundel);
     else if(preBundel==null && n===1) set.add(1);
@@ -1308,7 +1346,7 @@ $('#amConfirm').onclick=async()=>{
     deliveredUids.push(uid);
   }
   if(!done&&!part){ toast('Niets aangevinkt'); return; }
-  await save(); $('#amodal').classList.remove('show'); await render();
+  await save(); $('#amodal').classList.remove('show'); await render(); amSession=null; renderUitscanPanel();
   toast(done+part+' order(s) afgemeld'+(part?' ('+part+' deels)':''));
   if($('#search')) $('#search').value='';
   mailDelivery(deliveredUids, amState.photo);
