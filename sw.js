@@ -1,6 +1,6 @@
 /* Bezorg-app service worker — maakt de index installeerbaar en offline-bruikbaar.
    Bump CACHE als je een nieuwe versie uitrolt, dan vervangt de SW de oude cache. */
-const CACHE = 'bezorg-v1';
+const CACHE = 'bezorg-v2';
 
 /* App-schil: moet aanwezig zijn voor offline gebruik (relatieve paden i.v.m. submap op GitHub Pages). */
 const CORE = [
