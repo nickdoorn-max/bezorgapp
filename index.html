@@ -558,29 +558,33 @@ function kantoorMail(){
 }
 function plateOf(o){ const c=String(o&&o.chauffeur||''); const i=c.indexOf('/'); return (i>=0?c.slice(i+1):c).trim(); }   // kenteken = deel na "/" in de voertuignaam
 function routeOrders(){ return orders.filter(o=>!o.extra && o.status!=='done' && !leftBehind(o)).filter(inFilter); }
-function routeInscanComplete(){ const r=routeOrders(); return r.length>0 && r.every(inscanComplete); }
+function reportRitNo(){ const rs=routeOrders().filter(o=>!ritReported(ritKey(o))).map(ritNo); return rs.length?Math.min.apply(null,rs):null; }   // rit die nu aangemeld wordt = laagste nog niet-aangemelde rit
+function reportRit(){ const r=reportRitNo(); if(r==null) return []; return routeOrders().filter(o=>!ritReported(ritKey(o)) && ritNo(o)===r); }
+function multiRitRoute(){ return new Set(orders.filter(o=>!o.extra).map(ritNo)).size>1; }
+function routeInscanComplete(){ const r=reportRit(); return r.length>0 && r.every(inscanComplete); }
 function openMail(to,subject,body){ const url='mailto:'+encodeURIComponent(to)+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body); try{ location.href=url; }catch(e){ toast('Kon de mail niet openen'); } }
 function refOf(o){ return (o.referentie||o.relatie||'').trim(); }
 function ordRef(o){ const r=refOf(o); return o.ord+(r?'  '+r:''); }
 function klantMail(o){ return (o && o.klantmail) ? String(o.klantmail) : (KANTOOR_MAIL_DEFAULT||''); }   // TESTFASE: klantadres komt later
 function mailLoad(mode){
-  const route=routeOrders();
+  const route=reportRit();
   if(!route.length){ toast('Geen route geladen'); return; }
   const to=kantoorMail();
+  const rno=reportRitNo(), multi=multiRitRoute(), ritTag=multi?(' rit '+rno):'';
   const plate=[...new Set(route.map(plateOf))].filter(Boolean).join(', ')||'onbekend';
   const sorted=route.slice().sort((a,b)=>((a.volgorde==null?1e9:a.volgorde)-(b.volgorde==null?1e9:b.volgorde))||(String(a.ord)>String(b.ord)?1:-1));
   if(mode==='compleet'){
-    const subject=plate+' — compleet';
-    const body='Route compleet — alle '+sorted.length+' orders ingescand en geladen (kenteken '+plate+').\n\n'
+    const subject=plate+ritTag+' — compleet';
+    const body=(multi?('Rit '+rno+' compleet'):'Route compleet')+' — alle '+sorted.length+' orders ingescand en geladen (kenteken '+plate+').\n\n'
       +sorted.map(ordRef).join('\n');
     openMail(to, subject, body);
   } else {
-    const subject=plate+' — niet compleet';
+    const subject=plate+ritTag+' — niet compleet';
     const missing=sorted.filter(o=>!inscanComplete(o)).map(o=>{ const sc=inscanList(o), n=bundleCount(o); const miss=[]; for(let i=1;i<=n;i++) if(!sc.includes(i)) miss.push(i);
       return ordRef(o)+'  —  '+(sc.length===0?('hele order ('+n+' bundel'+(n>1?'s':'')+')'):('mist bundel '+miss.join(' '))); });
     const loaded=sorted.filter(o=>inscanList(o).length>0).map(o=>{ const sc=inscanList(o), n=bundleCount(o);
       return ordRef(o)+(sc.length<n?('  —  bundel '+sc.slice().sort((a,b)=>a-b).join(' ')):''); });
-    const body='Rit gestart met MISSENDE pakketten — kenteken '+plate+'.\n\n'
+    const body=(multi?('Rit '+rno):'Rit')+' gestart met MISSENDE pakketten — kenteken '+plate+'.\n\n'
       +'NIET MEE:\n'+(missing.length?missing.join('\n'):'(geen)')+'\n\n'
       +'WEL MEE:\n'+(loaded.length?loaded.join('\n'):'(geen)');
     openMail(to, subject, body);
@@ -598,16 +602,17 @@ function renderRitStart(){
   if(filterDriver==='__all' && activeDrivers().length>1){
     host.innerHTML='<div class="ritbanner neutral">Meerdere routes geladen. Tik op de <b>Scanner</b>-tab eerst je eigen route aan om hier te melden.</div>'; return;
   }
-  const route=routeOrders();
+  const route=reportRit();
   if(!route.length){ host.innerHTML='<div class="ritbanner neutral">Nog geen route geladen. Laad ‘m hierboven en scan bij het inladen alle pakbonnen.</div>'; return; }
+  const rno=reportRitNo(), multi=multiRitRoute(), ritLbl=multi?('Rit '+rno+' '):'';
   const incomplete=route.filter(o=>!inscanComplete(o));
   const plate=[...new Set(route.map(plateOf))].filter(Boolean).join(', ')||'—';
   if(!incomplete.length){
-    host.innerHTML=`<div class="ritbanner ok"><b>Route compleet</b> · alle ${route.length} orders ingescand · kenteken ${esc(plate)}</div><button class="btn primary full" id="btnRitCompleet">Route compleet melden</button>`;
+    host.innerHTML=`<div class="ritbanner ok"><b>${ritLbl?ritLbl+'compleet':'Route compleet'}</b> · alle ${route.length} orders ingescand · kenteken ${esc(plate)}</div><button class="btn primary full" id="btnRitCompleet">${multi?('Rit '+rno+' melden'):'Route compleet melden'} — alle pakketten geladen</button>`;
     const b=$('#btnRitCompleet'); if(b) b.onclick=()=>mailLoad('compleet');
   } else {
     const missB=incomplete.reduce((s,o)=>s+(bundleCount(o)-inscanList(o).length),0);
-    host.innerHTML=`<div class="ritbanner warn"><b>Nog niet alles ingescand</b> · ${incomplete.length} order(s), ${missB} bundel(s) ontbreken · kenteken ${esc(plate)}</div><button class="btn danger full" id="btnRitIncompleet">Start rit — missende pakketten melden</button>`;
+    host.innerHTML=`<div class="ritbanner warn"><b>${ritLbl}nog niet alles ingescand</b> · ${incomplete.length} order(s), ${missB} bundel(s) ontbreken · kenteken ${esc(plate)}</div><button class="btn danger full" id="btnRitIncompleet">${multi?('Rit '+rno+' starten'):'Start rit'} — missende pakketten melden</button>`;
     const b=$('#btnRitIncompleet'); if(b) b.onclick=()=>mailLoad('incompleet');
   }
 }
