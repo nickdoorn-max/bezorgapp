@@ -1,7 +1,7 @@
 /* Bezorg-app service worker.
    App-bestanden: NETWORK-FIRST → online krijg je altijd de nieuwste versie; de cache is enkel offline-vangnet.
    Libraries/overige bestanden: cache-first. Bump CACHE bij een nieuwe uitrol. */
-const CACHE = 'bezorg-v31';
+const CACHE = 'bezorg-v34';
 
 const CORE = [
   './',

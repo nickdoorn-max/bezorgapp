@@ -526,7 +526,7 @@ const tapeColor=o=>o&&(o.tape||o.color)||'';                              // ord
 const tapeDot=o=>{ const c=tapeColor(o); return c?`<span class="tapedot" style="background:${c}" title="tapekleur"></span>`:''; };
 const uid=()=>'o'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 
-async function load(){ const raw=await store.get(KEY); if(raw){try{orders=JSON.parse(raw)||[];}catch(e){orders=[];}} try{ const m=await store.get(MAILKEY); if(m) mailTo=String(m); }catch(e){} try{ const r=await store.get(RKEY); routeReported=(r==='1'); if(r==null) routeReported=orders.some(o=>o.reported && o.status!=='done'); }catch(e){} reportedRits=[...new Set(orders.filter(o=>o.reported).map(o=>ritKey(o)))]; if(routeReported) scanMode='uitscan'; await render(); applyScanMode(); setView('scanner'); }
+async function load(){ const raw=await store.get(KEY); if(raw){try{orders=JSON.parse(raw)||[];}catch(e){orders=[];}} try{ const m=await store.get(MAILKEY); if(m) mailTo=String(m); }catch(e){} reportedRits=[...new Set(orders.filter(o=>o.reported).map(o=>ritKey(o)))]; routeReported=orders.some(o=>o.reported && o.status==='open' && !leftBehind(o)); try{ store.set(RKEY, routeReported?'1':'0'); }catch(e){} scanMode=routeReported?'uitscan':'inscan'; await render(); applyScanMode(); setView('scanner'); }
 async function save(){ await store.set(KEY, JSON.stringify(orders)); }
 async function setMailTo(m){ m=String(m||'').trim(); if(!m) return; mailTo=m; try{ await store.set(MAILKEY,m); }catch(e){} }
 
@@ -566,6 +566,17 @@ function openMail(to,subject,body){ const url='mailto:'+encodeURIComponent(to)+'
 function refOf(o){ return (o.referentie||o.relatie||'').trim(); }
 function ordRef(o){ const r=refOf(o); return o.ord+(r?'  '+r:''); }
 function klantMail(o){ return (o && o.klantmail) ? String(o.klantmail) : (KANTOOR_MAIL_DEFAULT||''); }   // TESTFASE: klantadres komt later
+function maybeStartNextRit(deliveredUids){
+  const d0=orders.find(o=>(deliveredUids||[]).indexOf(o.uid)>=0); if(!d0) return;
+  const dk=ritKey(d0), dr=ritNo(d0);
+  // is deze rit nu helemaal geleverd? (geen open, ingeladen orders meer in deze rit)
+  if(orders.some(o=>o.status==='open' && !o.extra && !leftBehind(o) && ritKey(o)===dk)) return;
+  const next=reportRitNo();                       // staat er nog een rit klaar om in te laden?
+  if(next==null || next<=dr) return;
+  scanMode='inscan'; routeReported=false; try{ store.set(RKEY,'0'); }catch(e){}
+  applyScanMode(); setView('scanner'); render();
+  alert('Rit '+dr+' is geleverd.\n\nStart nu met het inscannen (inladen) van rit '+next+'.');
+}
 function mailLoad(mode){
   const route=reportRit();
   if(!route.length){ toast('Geen route geladen'); return; }
@@ -1304,20 +1315,25 @@ function isNextStop(addr){ const nx=nextStopAddr(); return !nx || normAddr(nx)==
 function uitscanTick(o, bundel){
   if(o.status==='done'){ toast('Order '+o.ord+' is al afgemeld'); return; }
   if(leftBehind(o)){ toast('Order '+o.ord+' is niet meegegaan (niet ingeladen)'); return; }
-  const addr=o.adres||'';
+  const addr=o.adres||'', ok=ritKey(o);
   if(amSession){
     if(normAddr(amSession.addr)!==normAddr(addr)){
       // één adres tegelijk: een bon van een ánder afleveradres mag niet in deze sessie
       alert('Niet het juiste adres.\n\nJe bent bezig met afmelden van:\n'+((amSession.group[0]&&amSession.group[0].relatie)?amSession.group[0].relatie+'\n':'')+amSession.addr+'\n\nRond eerst dit adres af voordat je een ander afleveradres scant.');
       return;
     }
+    if(amSession.ritk && ok!==amSession.ritk){
+      // zelfde adres maar een andere rit → hoort bij een latere/andere rit, niet in deze sessie
+      alert('Deze bon hoort bij rit '+ritNo(o)+'.\n\nJe bent op dit adres bezig met rit '+(amSession.group[0]?ritNo(amSession.group[0]):'?')+'. Deze order lever je in rit '+ritNo(o)+'.');
+      return;
+    }
   } else {
-    const group=orders.filter(x=>(x.adres||'')===addr && x.status!=='done' && !leftBehind(x));
+    const group=orders.filter(x=>(x.adres||'')===addr && ritKey(x)===ok && x.status!=='done' && !leftBehind(x));   // alleen orders van DEZELFDE rit op dit adres
     if(!group.length){ toast('Order '+o.ord+' is al afgemeld'); return; }
     if(!isNextStop(addr)){
       if(!confirm('Juiste order?\n\nVolgens de route is dit adres nog niet aan de beurt \u2014 er staan nog adressen vóór dit adres die nog niet zijn afgemeld.\n\nJa = toch dit adres nu afmelden.\nNee = scan annuleren (scan daarna het juiste adres).')) return;
     }
-    amSession={ addr, group, scanned:{} };
+    amSession={ addr, ritk:ok, group, scanned:{} };
     toast('Afmelden: '+(o.relatie||group[0].relatie||addr));
   }
   if(!(amSession.scanned[o.uid] instanceof Set)) amSession.scanned[o.uid]=new Set();
@@ -1352,10 +1368,10 @@ function renderUitscanPanel(){
 }
 function openAddressModal(scanned, preBundel){
   if(!routeReported){ toast('Meld eerst de rit bij “Rit aan-/afmelden” voordat je gaat uitscannen'); setView('import'); return; }
-  const addr=scanned.adres||'';
-  const group=orders.filter(x=>(x.adres||'')===addr && x.status!=='done' && !leftBehind(x));
+  const addr=scanned.adres||'', sk=ritKey(scanned);
+  const group=orders.filter(x=>(x.adres||'')===addr && ritKey(x)===sk && x.status!=='done' && !leftBehind(x));   // alleen orders van dezelfde rit op dit adres
   if(!group.length){ toast('Order '+scanned.ord+' is al afgemeld als geleverd'); return; }
-  const sess=(amSession && amSession.addr===addr)?amSession:null;
+  const sess=(amSession && amSession.addr===addr && amSession.ritk===sk)?amSession:null;
   amState={photo:null, scanned: sess?sess.scanned:{}, allDelivered:{}, addr:addr, gpsOverride:false};
   geocodeAddr(addr);   // alvast ophalen (gecachet) voor de GPS-controle
   $('#amRel').textContent=scanned.relatie||group[0].relatie||'Onbekende klant';
@@ -1447,6 +1463,7 @@ $('#amConfirm').onclick=async()=>{
   await save(); $('#amodal').classList.remove('show'); await render(); amSession=null; renderUitscanPanel();
   toast(done+part+' order(s) afgemeld'+(part?' ('+part+' deels)':''));
   if($('#search')) $('#search').value='';
+  maybeStartNextRit(deliveredUids);     // laatste order van de rit geleverd? → terug naar inscannen voor de volgende rit
   mailDelivery(deliveredUids, amState.photo);
 }
 
