@@ -761,11 +761,18 @@ function renderRoute(){
 }
 
 /* ---------------- Inscan-overzicht (driver start hier) ---------------- */
+/* sortering voor de inscanlijst = dezelfde route-volgorde als de Route-tab: per rit, op volgorde */
+function inscanSort(a,b){
+  return ritNo(a)-ritNo(b)
+    || ((a.volgorde!=null && b.volgorde!=null) ? a.volgorde-b.volgorde
+        : (a.volgorde!=null ? -1 : (b.volgorde!=null ? 1 : (postcode(a.adres)-postcode(b.adres) || huisnr(a.adres)-huisnr(b.adres)))))
+    || (String(a.ord)>String(b.ord)?1:-1);
+}
 function renderInscan(){
   const host=$('#listScan'); if(!host) return;
   const list=orders.filter(o=>o.status!=='done' && !o.extra && !leftBehind(o)).filter(inFilter);
   if(!list.length){ host.innerHTML=emptyState('open'); return; }
-  list.sort((a,b)=> (inscanComplete(a)?1:0)-(inscanComplete(b)?1:0) || postcode(a.adres)-postcode(b.adres) || (String(a.ord)>String(b.ord)?1:-1));
+  list.sort(inscanSort);
   let html='';
   list.forEach(o=>{
     const n=bundleCount(o), sc=inscanList(o), done=sc.length>=n;
@@ -795,6 +802,11 @@ function renderInscan(){
 }
 function activeViewId(){ const v=document.querySelector('.view.active'); return v?v.id:''; }
 async function inscanTick(o,bundel){
+  // volgorde-bewaking: waarschuw als een latere rit wordt ingescand terwijl een eerdere rit van dezelfde wagen nog niet geleverd is
+  const minRit=minOpenRit(o.chauffeur||'');
+  if(ritNo(o)>minRit){
+    if(!confirm('Let op — dit is een bon van rit '+ritNo(o)+', maar rit '+minRit+' is nog niet geleverd.\n\nWerk eerst rit '+minRit+' helemaal af:\ninscannen → start rit melden → uitscannen.\nDaarna pas rit '+ritNo(o)+' inscannen.\n\nToch deze bon van rit '+ritNo(o)+' inscannen?')) return;
+  }
   const n=bundleCount(o), set=inscanList(o); let b=bundel;
   if(b==null){ if(n===1) b=1; else { toast('Scan met bundelnummer (ordernr.bundel) — order '+o.ord+' heeft '+n+' bundels'); return; } }
   if(b<1||b>n){ toast('Bundel '+b+' bestaat niet (order '+o.ord+' heeft '+n+')'); return; }
@@ -875,6 +887,11 @@ let reportedRits=[];     // ritKeys van aangemelde ritten — bepaalt welke niet
 function ritNo(o){ const r=parseInt(o&&o.rit,10); return Number.isFinite(r)&&r>0?r:1; }
 function ritKey(o){ return (o&&o.chauffeur||'')+'|R'+ritNo(o); }     // unieke rit = chauffeur + ritnummer (trip)
 function ritReported(key){ return reportedRits.indexOf(key)>=0; }
+/* laagste nog niet geleverde rit van dezelfde wagen (voor de volgorde-waarschuwing bij inscannen) */
+function minOpenRit(chauffeur){
+  const rs=orders.filter(o=>o.status==='open' && !o.extra && !leftBehind(o) && (o.chauffeur||'')===(chauffeur||'')).map(ritNo);
+  return rs.length?Math.min.apply(null,rs):1;
+}
 let amSession=null;      // actieve uitscan-sessie per afleveradres
 function applyScanMode(){
   const inMode = scanMode==='inscan';
@@ -1276,13 +1293,25 @@ function sessComplete(){
   return amSession.group.every(o=>{ const set=amSession.scanned[o.uid]; if(inscanRequired(o)) return !!set && set.size>=1; const loaded=loadedBundles(o); return loaded.every(b=>set&&set.has(b)); });
 }
 function openUitlog(){ if(!amSession || !amSession.group.length) return; openAddressModal(amSession.group[0], null); }
+function normAddr(a){ return String(a||'').trim().toLowerCase().replace(/\s+/g,' '); }
+function nextStopAddr(){ const st=buildStops().filter(s=>!s.depot); return st.length?(st[0].adres||''):''; }   // eerstvolgende stop volgens de route
+function isNextStop(addr){ const nx=nextStopAddr(); return !nx || normAddr(nx)===normAddr(addr); }
 function uitscanTick(o, bundel){
   if(o.status==='done'){ toast('Order '+o.ord+' is al afgemeld'); return; }
   if(leftBehind(o)){ toast('Order '+o.ord+' is niet meegegaan (niet ingeladen)'); return; }
   const addr=o.adres||'';
-  if(!amSession || amSession.addr!==addr){
+  if(amSession){
+    if(normAddr(amSession.addr)!==normAddr(addr)){
+      // één adres tegelijk: een bon van een ánder afleveradres mag niet in deze sessie
+      alert('Niet het juiste adres.\n\nJe bent bezig met afmelden van:\n'+((amSession.group[0]&&amSession.group[0].relatie)?amSession.group[0].relatie+'\n':'')+amSession.addr+'\n\nRond eerst dit adres af voordat je een ander afleveradres scant.');
+      return;
+    }
+  } else {
     const group=orders.filter(x=>(x.adres||'')===addr && x.status!=='done' && !leftBehind(x));
     if(!group.length){ toast('Order '+o.ord+' is al afgemeld'); return; }
+    if(!isNextStop(addr)){
+      if(!confirm('Juiste order?\n\nVolgens de route is dit adres nog niet aan de beurt \u2014 er staan nog adressen vóór dit adres die nog niet zijn afgemeld.\n\nJa = toch dit adres nu afmelden.\nNee = scan annuleren (scan daarna het juiste adres).')) return;
+    }
     amSession={ addr, group, scanned:{} };
     toast('Afmelden: '+(o.relatie||group[0].relatie||addr));
   }
