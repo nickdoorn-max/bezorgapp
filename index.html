@@ -573,6 +573,8 @@ function maybeStartNextRit(deliveredUids){
   if(orders.some(o=>o.status==='open' && !o.extra && !leftBehind(o) && ritKey(o)===dk)) return;
   const next=reportRitNo();                       // staat er nog een rit klaar om in te laden?
   if(next==null || next<=dr) return;
+  // volgende rit al ingeladen (bewust samen geladen)? dan niet terug naar inscannen — gewoon doorgaan met uitleveren
+  if(orders.some(o=>(o.chauffeur||'')===(d0.chauffeur||'') && !o.extra && o.status==='open' && !leftBehind(o) && ritNo(o)===next && inscanList(o).length>0)) return;
   scanMode='inscan'; routeReported=false; try{ store.set(RKEY,'0'); }catch(e){}
   applyScanMode(); setView('scanner'); render();
   alert('Rit '+dr+' is geleverd.\n\nStart nu met het inscannen (inladen) van rit '+next+'.');
@@ -601,9 +603,10 @@ function mailLoad(mode){
     openMail(to, subject, body);
   }
   routeReported=true; try{ store.set(RKEY,'1'); }catch(e){}
-  let loadedKeys=[...new Set(route.filter(o=>inscanList(o).length>0).map(ritKey))];
-  if(!loadedKeys.length) loadedKeys=[...new Set(route.map(ritKey))];   // niets ingeladen → hele route aanmelden
-  route.forEach(o=>{ const k=ritKey(o); if(loadedKeys.indexOf(k)>=0){ o.reported=true; if(reportedRits.indexOf(k)<0) reportedRits.push(k); } });
+  // alle (deels) ingeladen ritten gelden als aangemeld — bewust samen geladen ritten worden samen uitgereden; niet-geladen orders vallen als achtergebleven uit de route
+  let loadedKeys=[...new Set(orders.filter(o=>!o.extra && o.status==='open' && inFilter(o) && inscanList(o).length>0).map(ritKey))];
+  if(!loadedKeys.length) loadedKeys=[...new Set(route.map(ritKey))];   // niets ingeladen → de gemelde rit aanmelden
+  orders.forEach(o=>{ if(!o.extra && inFilter(o)){ const k=ritKey(o); if(loadedKeys.indexOf(k)>=0){ o.reported=true; if(reportedRits.indexOf(k)<0) reportedRits.push(k); } } });
   try{ store.set(RRKEY, JSON.stringify(reportedRits)); }catch(e){} save();
   scanMode='uitscan'; applyScanMode(); setView('scanner'); render();
   toast('Rit aangemeld — scanner staat nu op uitscannen');
@@ -614,10 +617,21 @@ function renderRitStart(){
     host.innerHTML='<div class="ritbanner neutral">Meerdere routes geladen. Tik op de <b>Scanner</b>-tab eerst je eigen route aan om hier te melden.</div>'; return;
   }
   const route=reportRit();
-  if(!route.length){ host.innerHTML='<div class="ritbanner neutral">Nog geen route geladen. Laad ‘m hierboven en scan bij het inladen alle pakbonnen.</div>'; return; }
-  const rno=reportRitNo(), multi=multiRitRoute(), ritLbl=multi?('Rit '+rno+' '):'';
+  if(!route.length){
+    if(routeReported && orders.some(o=>!o.extra && o.status==='open' && !leftBehind(o) && inFilter(o))){
+      host.innerHTML='<div class="ritbanner ok"><b>Bezig met uitleveren</b> · scan de adressen af op de <b>Scanner</b>-tab</div>'; return;
+    }
+    host.innerHTML='<div class="ritbanner neutral">Nog geen route geladen. Laad ‘m hierboven en scan bij het inladen alle pakbonnen.</div>'; return;
+  }
+  const rno=reportRitNo(), multi=multiRitRoute();
+  // samengevoegde levering: er wordt al uitgeleverd én de volgende rit is al ingeladen → samen uitrijden
+  if(routeReported && route.some(o=>inscanList(o).length>0)){
+    host.innerHTML=`<div class="ritbanner ok"><b>Bezig met uitleveren</b> · rit ${rno} is meegeladen en wordt in dezelfde route uitgereden · scan op de <b>Scanner</b>-tab af</div>`;
+    return;
+  }
   const incomplete=route.filter(o=>!inscanComplete(o));
   const plate=[...new Set(route.map(plateOf))].filter(Boolean).join(', ')||'—';
+  const ritLbl=multi?('Rit '+rno+' '):'';
   if(!incomplete.length){
     host.innerHTML=`<div class="ritbanner ok"><b>${ritLbl?ritLbl+'compleet':'Route compleet'}</b> · alle ${route.length} orders ingescand · kenteken ${esc(plate)}</div><button class="btn primary full" id="btnRitCompleet">${multi?('Rit '+rno+' melden'):'Route compleet melden'} — alle pakketten geladen</button>`;
     const b=$('#btnRitCompleet'); if(b) b.onclick=()=>mailLoad('compleet');
@@ -701,15 +715,16 @@ function buildStops(){
   // meerdere ritten (andere wagen óf tweede/derde rit van dezelfde wagen) → na elke rit terug naar het magazijn
   const ritOrder=[]; open.forEach(o=>{ const rk=ritKey(o); if(ritOrder.indexOf(rk)<0) ritOrder.push(rk); });
   if(ritOrder.length>1){
-    let out=[], anyPlanned=false;
+    let out=[], anyPlanned=false, depots=0;
     ritOrder.forEach(rk=>{
       const rs=stops.filter(s=>s.ritk===rk);
       if(!rs.length) return;
       if(sortStops(rs)) anyPlanned=true;
-      if(out.length) out.push(depotStop(rs[0].rit));
+      const loaded=open.some(o=>ritKey(o)===rk && inscanList(o).length>0);   // deze rit al op de wagen geladen?
+      if(out.length && !loaded){ out.push(depotStop(rs[0].rit)); depots++; }  // alleen terug naar het magazijn als de rit nog NIET is ingeladen
       out.push(...rs);
     });
-    out._planned=anyPlanned; out._multiRit=true;
+    out._planned=anyPlanned; out._multiRit=true; out._hasDepot=depots>0;
     return out;
   }
   const planned=sortStops(stops);
@@ -755,7 +770,7 @@ function renderRoute(){
       </div></div>`;
       nr=0; return;                                    // nummering begint per rit opnieuw bij 1
     }
-    if(stops._multiRit && nr===0 && firstOverall) html+=`<div class="ritdiv">Rit 1</div>`;
+    if(stops._hasDepot && nr===0 && firstOverall) html+=`<div class="ritdiv">Rit 1</div>`;
     nr++; const first=firstOverall; firstOverall=false;
     const ords=s.orders.map(o=>`<span class="ordpill"${tapeColor(o)?` style="color:${tapeColor(o)}"`:''}>${tapeDot(o)}${esc(o.ord)}</span>`).join('');
     const memoHtml = s.memo ? (first
@@ -830,7 +845,7 @@ async function inscanTick(o,bundel){
   if(set.includes(b)){ toast('Bundel '+o.ord+'.'+b+' was al ingescand'); }
   else { set.push(b); set.sort((a,c)=>a-c); await save(); added=true; toast('Ingescand: '+o.ord+'.'+b+'  ('+set.length+'/'+n+')'+(set.length>=n?' ✓ compleet':'')); }
   renderInscan(); counts();
-  if(added && routeInscanComplete() && !routeReported && !(filterDriver==='__all' && activeDrivers().length>1)){
+  if(added && routeInscanComplete() && ritNo(o)===reportRitNo() && !routeReported && !(filterDriver==='__all' && activeDrivers().length>1)){
     toast('🚚 Route compleet — meld ‘m bij Rit aan-/afmelden');
     renderRitStart(); setView('import');
   }
