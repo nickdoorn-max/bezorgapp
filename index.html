@@ -366,6 +366,7 @@
           <button class="btn primary full" id="btnControl">Rit doormailen voor controle (orders + foto's + GPS)</button>
           <button class="btn danger full" id="btnClear">Alles wissen</button>
         </div>
+        <p class="sub" id="clearHint" style="display:none;margin-top:8px">“Alles wissen” staat uit tot je de rit hebt doorgemaild voor controle — zo raak je geen orders, foto’s of GPS kwijt.</p>
       </div>
     </section>
   </main>
@@ -514,11 +515,12 @@ const store={
   async set(k,v){ mem[k]=v; if(HAS){try{await window.storage.set(k,v,false);return;}catch(e){}} if(hasIDB){try{await idbDo('readwrite',st=>st.put(v,k));return;}catch(e){}} },
   async del(k){ delete mem[k]; if(HAS){try{await window.storage.delete(k,false);}catch(e){}} if(hasIDB){try{await idbDo('readwrite',st=>st.delete(k));}catch(e){}} }
 };
-const KEY='orders_v2', MAILKEY='app_mailTo', RKEY='app_reported', RRKEY='app_reported_rits';
+const KEY='orders_v2', MAILKEY='app_mailTo', RKEY='app_reported', RRKEY='app_reported_rits', CTRLKEY='app_controlExported';
 
 let orders=[];     // {uid,chauffeur,relatie,adres,ord,aantal,gewicht,status,deliveredAt,note,hasPhoto,lat,lng,acc}
 let mailTo='';     // e-mail voor bezorgmeldingen (komt mee uit de Ritplanner-export)
 let current=null, pendingPhoto=null, filterDriver='__all';
+let exportedSig='';   // handtekening van de route zoals laatst doorgemaild voor controle ('afgemeld')
 
 const $=s=>document.querySelector(s);
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -526,8 +528,14 @@ const tapeColor=o=>o&&(o.tape||o.color)||'';                              // ord
 const tapeDot=o=>{ const c=tapeColor(o); return c?`<span class="tapedot" style="background:${c}" title="tapekleur"></span>`:''; };
 const uid=()=>'o'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 
-async function load(){ const raw=await store.get(KEY); if(raw){try{orders=JSON.parse(raw)||[];}catch(e){orders=[];}} try{ const m=await store.get(MAILKEY); if(m) mailTo=String(m); }catch(e){} reportedRits=[...new Set(orders.filter(o=>o.reported).map(o=>ritKey(o)))]; routeReported=orders.some(o=>o.reported && o.status==='open' && !leftBehind(o)); try{ store.set(RKEY, routeReported?'1':'0'); }catch(e){} scanMode=routeReported?'uitscan':'inscan'; await render(); applyScanMode(); setView('scanner'); }
+async function load(){ const raw=await store.get(KEY); if(raw){try{orders=JSON.parse(raw)||[];}catch(e){orders=[];}} try{ const m=await store.get(MAILKEY); if(m) mailTo=String(m); }catch(e){} try{ const c=await store.get(CTRLKEY); if(c) exportedSig=String(c); }catch(e){} reportedRits=[...new Set(orders.filter(o=>o.reported).map(o=>ritKey(o)))]; routeReported=orders.some(o=>o.reported && o.status==='open' && !leftBehind(o)); try{ store.set(RKEY, routeReported?'1':'0'); }catch(e){} scanMode=routeReported?'uitscan':'inscan'; await render(); applyScanMode(); setView('scanner'); }
 async function save(){ await store.set(KEY, JSON.stringify(orders)); }
+
+/* ---- 'Alles wissen' pas vrijgeven als de rit is afgemeld (doorgemaild voor controle) ---- */
+function routeSignature(){ return orders.length+'|'+orders.map(o=>o.uid+':'+(o.status==='done'?('d'+(o.deliveredAt||'')):'o')).join(','); }
+function routeAfgemeld(){ return !orders.length || exportedSig===routeSignature(); }   // niets te wissen, of de huidige route is precies zo doorgemaild
+async function markExported(){ exportedSig=routeSignature(); try{ await store.set(CTRLKEY, exportedSig); }catch(e){} updateClearGuard(); }
+function updateClearGuard(){ const b=$('#btnClear'); if(!b) return; const ok=routeAfgemeld(); b.disabled=!ok; const h=$('#clearHint'); if(h) h.style.display=ok?'none':'block'; }
 async function setMailTo(m){ m=String(m||'').trim(); if(!m) return; mailTo=m; try{ await store.set(MAILKEY,m); }catch(e){} }
 
 function fmtWeight(g){ if(g===''||g==null) return '—'; return /[a-z]/i.test(String(g))?g:g+' kg'; }
@@ -691,6 +699,7 @@ async function render(){
   $('#listDone').innerHTML = done.length? done.map(o=>labelCard(o,true)).join('') : emptyState('done');
   renderRoute();
   renderExtraList();
+  updateClearGuard();
 }
 
 function postcode(adr){ const m=String(adr||'').match(/(\d{4})\s?[A-Za-z]{2}\b/); return m?parseInt(m[1],10):999999; }
@@ -1197,9 +1206,10 @@ if($('#btnExport')) $('#btnExport').onclick=()=>{
   toast(list.length+' orders geëxporteerd');
 };
 $('#btnClear').onclick=async()=>{
+  if(!routeAfgemeld()){ alert('De rit is nog niet afgemeld.\n\nMail eerst de rit door voor controle (de knop hierboven). Pas daarna kun je alles wissen.'); updateClearGuard(); return; }
   if(!confirm('Alle orders en foto\'s wissen? Dit kan niet ongedaan worden gemaakt.')) return;
   for(const o of orders){ if(o.hasPhoto) await store.del('photo:'+o.uid); }
-  orders=[]; filterDriver='__all'; routeReported=false; reportedRits=[]; await store.del(KEY); try{ await store.del(RKEY); }catch(e){} try{ await store.del(RRKEY); }catch(e){} await render(); applyScanMode(); toast('Route geleegd');
+  orders=[]; filterDriver='__all'; routeReported=false; reportedRits=[]; exportedSig=''; await store.del(KEY); try{ await store.del(RKEY); }catch(e){} try{ await store.del(RRKEY); }catch(e){} try{ await store.del(CTRLKEY); }catch(e){} await render(); applyScanMode(); toast('Route geleegd');
 };
 
 let camStream=null, camRunning=false, detector=null, scanCanvas=null;
@@ -1677,11 +1687,12 @@ async function exportControl(){
     +'Orders: '+items.length+' (geleverd '+nDone+', deels '+nPart+', open '+nOpen+')';
   try{
     const file=new File([blob],fname,{type:'application/json'});
-    if(navigator.share && (!navigator.canShare || navigator.canShare({files:[file]}))){ await navigator.share({files:[file], title:subj, text:body}); return; }
+    if(navigator.share && (!navigator.canShare || navigator.canShare({files:[file]}))){ await navigator.share({files:[file], title:subj, text:body}); await markExported(); return; }
   }catch(e){ if(e&&e.name==='AbortError') return; }
   // delen-met-bijlage lukt niet op dit toestel → bestand opslaan en mail met de tekst openen (bijlage handmatig)
   try{ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=fname; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1500); }catch(e){}
   try{ location.href='mailto:'+encodeURIComponent(kantoorMail())+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(body+'\n\n(Het bestand "'+fname+'" is gedownload \u2014 voeg het toe als bijlage.)'); }catch(e){}
+  await markExported();
   toast('Controlebestand gedownload — voeg het toe als bijlage in de mail');
 }
 if($('#btnControl')) $('#btnControl').onclick=exportControl;
