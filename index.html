@@ -100,6 +100,7 @@
   .stop.depot .num{background:#fff; border:2px dashed var(--amber-deep); color:var(--amber-deep); font-size:15px}
   .stop.depot .scard.depotcard{background:#fff7f3; border:1px dashed var(--amber-deep)}
   .stop.depot .scard.depotcard .rel{color:var(--amber-deep); letter-spacing:.01em}
+  .ritdiv{font:700 11px var(--mono); letter-spacing:.08em; text-transform:uppercase; color:var(--amber-deep); margin:2px 0 6px 2px}
   .ordpill{display:inline-flex; align-items:center; margin:0 9px 4px 0; font:700 12px var(--mono); white-space:nowrap}
   .ordpill .tapedot{width:9px; height:9px; margin-right:4px}
   .routehint{font-size:12.5px; color:var(--muted); line-height:1.5; margin:2px 4px 14px; padding:10px 12px; background:#fbf6e8; border:1px solid #f0e3c4; border-radius:9px}
@@ -525,7 +526,7 @@ const tapeColor=o=>o&&(o.tape||o.color)||'';                              // ord
 const tapeDot=o=>{ const c=tapeColor(o); return c?`<span class="tapedot" style="background:${c}" title="tapekleur"></span>`:''; };
 const uid=()=>'o'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 
-async function load(){ const raw=await store.get(KEY); if(raw){try{orders=JSON.parse(raw)||[];}catch(e){orders=[];}} try{ const m=await store.get(MAILKEY); if(m) mailTo=String(m); }catch(e){} try{ const r=await store.get(RKEY); routeReported=(r==='1'); if(r==null) routeReported=orders.some(o=>o.reported && o.status!=='done'); }catch(e){} reportedRits=[...new Set(orders.filter(o=>o.reported).map(o=>o.chauffeur||''))]; if(routeReported) scanMode='uitscan'; await render(); applyScanMode(); setView('scanner'); }
+async function load(){ const raw=await store.get(KEY); if(raw){try{orders=JSON.parse(raw)||[];}catch(e){orders=[];}} try{ const m=await store.get(MAILKEY); if(m) mailTo=String(m); }catch(e){} try{ const r=await store.get(RKEY); routeReported=(r==='1'); if(r==null) routeReported=orders.some(o=>o.reported && o.status!=='done'); }catch(e){} reportedRits=[...new Set(orders.filter(o=>o.reported).map(o=>ritKey(o)))]; if(routeReported) scanMode='uitscan'; await render(); applyScanMode(); setView('scanner'); }
 async function save(){ await store.set(KEY, JSON.stringify(orders)); }
 async function setMailTo(m){ m=String(m||'').trim(); if(!m) return; mailTo=m; try{ await store.set(MAILKEY,m); }catch(e){} }
 
@@ -585,7 +586,9 @@ function mailLoad(mode){
     openMail(to, subject, body);
   }
   routeReported=true; try{ store.set(RKEY,'1'); }catch(e){}
-  route.forEach(o=>{ o.reported=true; const c=o.chauffeur||''; if(reportedRits.indexOf(c)<0) reportedRits.push(c); });
+  let loadedKeys=[...new Set(route.filter(o=>inscanList(o).length>0).map(ritKey))];
+  if(!loadedKeys.length) loadedKeys=[...new Set(route.map(ritKey))];   // niets ingeladen → hele route aanmelden
+  route.forEach(o=>{ const k=ritKey(o); if(loadedKeys.indexOf(k)>=0){ o.reported=true; if(reportedRits.indexOf(k)<0) reportedRits.push(k); } });
   try{ store.set(RRKEY, JSON.stringify(reportedRits)); }catch(e){} save();
   scanMode='uitscan'; applyScanMode(); setView('scanner'); render();
   toast('Rit aangemeld — scanner staat nu op uitscannen');
@@ -665,7 +668,7 @@ function huisnr(adr){ const a=String(adr||''); const before=a.split(/\d{4}\s?[A-
 function num(v){ const f=parseFloat(String(v).replace(',','.')); return isNaN(f)?0:f; }
 
 const DEPOT_ADDR='4004 LZ 8, Tiel';   // magazijn Tiel — terug laden tussen ritten
-function depotStop(){ return {relatie:'Magazijn', adres:DEPOT_ADDR, chauffeur:'', orders:[], weight:0, seq:Infinity, lt:'', memo:'', ref:'', depot:true}; }
+function depotStop(nextRit){ return {relatie:'Magazijn', adres:DEPOT_ADDR, chauffeur:'', orders:[], weight:0, seq:Infinity, lt:'', memo:'', ref:'', depot:true, nextRit:nextRit||0}; }
 function sortStops(arr){
   const planned = arr.some(s=>s.seq!==Infinity);
   const noAddr=s=>String(s.adres||'').trim()?0:1;
@@ -676,24 +679,22 @@ function sortStops(arr){
 function buildStops(){
   const open=orders.filter(o=>o.status==='open' && !leftBehind(o)).filter(inFilter);
   const map=new Map();
-  open.forEach(o=>{ const key=(o.adres||'??')+'|'+(o.relatie||''); if(!map.has(key)) map.set(key,{relatie:o.relatie,adres:o.adres,chauffeur:o.chauffeur||'',orders:[],weight:0,seq:Infinity,lt:''}); const g=map.get(key); g.orders.push(o); g.weight+=num(o.gewicht); if(o.volgorde!=null && o.volgorde<g.seq) g.seq=o.volgorde; if(o.tijdslevering && !g.lt) g.lt=o.tijdslevering; });
+  open.forEach(o=>{ const rk=ritKey(o); const key=rk+'|'+(o.adres||'??')+'|'+(o.relatie||''); if(!map.has(key)) map.set(key,{relatie:o.relatie,adres:o.adres,chauffeur:o.chauffeur||'',ritk:rk,rit:ritNo(o),orders:[],weight:0,seq:Infinity,lt:''}); const g=map.get(key); g.orders.push(o); g.weight+=num(o.gewicht); if(o.volgorde!=null && o.volgorde<g.seq) g.seq=o.volgorde; if(o.tijdslevering && !g.lt) g.lt=o.tijdslevering; });
   const stops=[...map.values()];
   stops.forEach(s=>{ const ms=[...new Set(s.orders.map(o=>(o.memo||'').trim()).filter(Boolean))]; s.memo=ms.join('  ·  '); s.ref=(s.orders.map(o=>(o.referentie||'').trim()).filter(Boolean)[0])||''; });
-  // meerdere ritten tegelijk geladen → na elke rit terug naar het magazijn voordat de volgende rit start
-  if(filterDriver==='__all'){
-    const ritOrder=[]; open.forEach(o=>{ const c=o.chauffeur||''; if(ritOrder.indexOf(c)<0) ritOrder.push(c); });
-    if(ritOrder.length>1){
-      let out=[], anyPlanned=false;
-      ritOrder.forEach(c=>{
-        const rs=stops.filter(s=>(s.chauffeur||'')===c);
-        if(!rs.length) return;
-        if(sortStops(rs)) anyPlanned=true;
-        if(out.length) out.push(depotStop());
-        out.push(...rs);
-      });
-      out._planned=anyPlanned; out._multiRit=true;
-      return out;
-    }
+  // meerdere ritten (andere wagen óf tweede/derde rit van dezelfde wagen) → na elke rit terug naar het magazijn
+  const ritOrder=[]; open.forEach(o=>{ const rk=ritKey(o); if(ritOrder.indexOf(rk)<0) ritOrder.push(rk); });
+  if(ritOrder.length>1){
+    let out=[], anyPlanned=false;
+    ritOrder.forEach(rk=>{
+      const rs=stops.filter(s=>s.ritk===rk);
+      if(!rs.length) return;
+      if(sortStops(rs)) anyPlanned=true;
+      if(out.length) out.push(depotStop(rs[0].rit));
+      out.push(...rs);
+    });
+    out._planned=anyPlanned; out._multiRit=true;
+    return out;
   }
   const planned=sortStops(stops);
   stops._planned=planned;
@@ -727,18 +728,19 @@ function renderRoute(){
       ? 'Volgorde overgenomen uit de <b>Ritplanner</b> (geoptimaliseerd op rijafstand). Tik op <b>Navigeer</b> voor de kaart en navigatie.'
       : 'Volgorde op postcode en huisnummer — een snelle logische indeling. Voor een écht kortste route tik je op <b>Navigeer</b>; dan opent de hele route in Google Maps.')}</div>
   <div class="stops">`;
-  let nr=0;
+  let nr=0, firstOverall=true;
   stops.forEach((s)=>{
     if(s.depot){
       html+=`<div class="stop depot"><div class="num">⤺</div><div class="scard depotcard">
-        <div class="rel">Terug naar magazijn</div>
+        <div class="rel">Terug naar magazijn${s.nextRit?` — laden voor rit ${s.nextRit}`:''}</div>
         <div class="ad">${esc(s.adres)}</div>
         <div class="sm"><span class="tag">opnieuw laden voor de volgende rit</span>
           <a class="go" href="https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=${encodeURIComponent(s.adres)}" target="_blank" rel="noopener">Navigeer →</a></div>
       </div></div>`;
-      return;
+      nr=0; return;                                    // nummering begint per rit opnieuw bij 1
     }
-    nr++; const first=(nr===1);
+    if(stops._multiRit && nr===0 && firstOverall) html+=`<div class="ritdiv">Rit 1</div>`;
+    nr++; const first=firstOverall; firstOverall=false;
     const ords=s.orders.map(o=>`<span class="ordpill"${tapeColor(o)?` style="color:${tapeColor(o)}"`:''}>${tapeDot(o)}${esc(o.ord)}</span>`).join('');
     const memoHtml = s.memo ? (first
         ? `<div class="routememo big"><span class="ic">📝</span><span>${esc(s.memo)}</span></div>`
@@ -869,8 +871,10 @@ if($('#scanCamStart')) $('#scanCamStart').onclick=()=>startInlineCam('#camScan',
 /* ---- scanner-modus: één scanner voor in- én uitscannen ---- */
 let scanMode='inscan';   // 'inscan' (inladen) | 'uitscan' (op locatie afmelden)
 let routeReported=false; // huidige rit aangemeld? stuurt de scanner-modus (inscan/uitscan)
-let reportedRits=[];     // chauffeurs van aangemelde ritten — bepaalt welke niet-ingeladen adressen uit de route vallen
-function ritReported(ch){ return reportedRits.indexOf(ch||'')>=0; }
+let reportedRits=[];     // ritKeys van aangemelde ritten — bepaalt welke niet-ingeladen adressen uit de route vallen
+function ritNo(o){ const r=parseInt(o&&o.rit,10); return Number.isFinite(r)&&r>0?r:1; }
+function ritKey(o){ return (o&&o.chauffeur||'')+'|R'+ritNo(o); }     // unieke rit = chauffeur + ritnummer (trip)
+function ritReported(key){ return reportedRits.indexOf(key)>=0; }
 let amSession=null;      // actieve uitscan-sessie per afleveradres
 function applyScanMode(){
   const inMode = scanMode==='inscan';
@@ -977,7 +981,7 @@ async function importOrders(list, label){
     const ord=String(o.ordernummer||o.ord||'').trim(); if(!ord || existing.has(ord)) return;
     orders.push({uid:uid(), chauffeur:String(o.chauffeur||'').trim(), color:importColor(o), tape:importHex(o.ordercolor), relatie:String(o.relatie||'').trim(),
       adres:String(o.adres||'').trim(), ord, aantal:o.aantal!=null?String(o.aantal):'', gewicht:o.gewicht!=null?String(o.gewicht):'',
-      volgorde:(o.volgorde!=null && o.volgorde!==''?Number(o.volgorde):null), levertijd:String(o.levertijd||''), memo:String(o.memo||'').trim(), referentie:String(o.referentie||'').trim(), tijdslevering:String(o.tijdslevering||'').trim(),
+      volgorde:(o.volgorde!=null && o.volgorde!==''?Number(o.volgorde):null), rit:(o.rit!=null && o.rit!==''?Math.max(1,parseInt(o.rit,10)||1):1), levertijd:String(o.levertijd||''), memo:String(o.memo||'').trim(), referentie:String(o.referentie||'').trim(), tijdslevering:String(o.tijdslevering||'').trim(),
       status:'open', deliveredAt:null, note:'', hasPhoto:false, missing:[], inscan:[]});
     existing.add(ord); nieuw++;
   });
@@ -1205,7 +1209,7 @@ function inscanRequired(o){ return bundleCount(o)>FULL_SCAN_MAX; }
 function inscanList(o){ return Array.isArray(o.inscan)?o.inscan:(o.inscan=[]); }
 function inscanComplete(o){ return inscanList(o).length>=bundleCount(o); }
 function loadedBundles(o){ const n=bundleCount(o); const arr=(Array.isArray(o.inscan)?o.inscan:[]).filter(b=>Number.isInteger(b)&&b>=1&&b<=n); return arr.length?[...new Set(arr)].sort((a,b)=>a-b):Array.from({length:n},(_,i)=>i+1); }
-function leftBehind(o){ return ritReported(o.chauffeur) && !o.extra && o.status!=='done' && inscanList(o).length===0; }
+function leftBehind(o){ return ritReported(ritKey(o)) && !o.extra && o.status!=='done' && inscanList(o).length===0; }
 function parseScan(val){
   val=String(val||'').trim();
   const m=val.match(/^(.+)\.(\d+)$/);            // ordernummer.bundelnummer  (bijv. 2119132.1)
@@ -1233,7 +1237,7 @@ async function importRouteQR(data){
     for(let i=2;i<lines.length;i++){
       if(!lines[i]) continue;
       const c=lines[i].split('\t');
-      list.push({ordernummer:c[0], relatie:c[1], adres:c[2], aantal:c[3], gewicht:c[4], volgorde:c[5], levertijd:c[6], memo:c[7]||'', referentie:c[8]||'', tijdslevering:c[9]||'', ordercolor:c[10]||'', chauffeur, kleur});
+      list.push({ordernummer:c[0], relatie:c[1], adres:c[2], aantal:c[3], gewicht:c[4], volgorde:c[5], levertijd:c[6], memo:c[7]||'', referentie:c[8]||'', tijdslevering:c[9]||'', ordercolor:c[10]||'', rit:c[11]||'1', chauffeur, kleur});
     }
     importOrders(list, 'QR · '+(chauffeur||'route')+(datum?' · '+datum:''));
   }catch(e){ console.error(e); toast('QR-code niet leesbaar'); }
@@ -1591,7 +1595,7 @@ async function exportControl(){
       lat:(o.lat!=null?o.lat:null), lng:(o.lng!=null?o.lng:null), acc:(o.acc!=null?o.acc:null),
       bundels:bundleCount(o), ingescand:Array.isArray(o.inscan)?o.inscan.slice():[],
       missing:Array.isArray(o.missing)?o.missing.slice():[],
-      volgorde:(o.volgorde!=null?o.volgorde:null), levertijd:o.levertijd||'', tijdslevering:o.tijdslevering||'',
+      volgorde:(o.volgorde!=null?o.volgorde:null), rit:ritNo(o), levertijd:o.levertijd||'', tijdslevering:o.tijdslevering||'',
       note:o.note||'', extra:!!o.extra, extraReason:o.extraReason||'', photo:photo
     });
   }
